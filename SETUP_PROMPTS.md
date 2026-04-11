@@ -1,23 +1,71 @@
 # Setup Prompts
 
-Copy-paste these prompts into Claude or ChatGPT to walk through Recall setup and wire it into your AI workflow.
+Recall is designed to be set up by an AI. Paste one of the prompts below into Claude Code (or any MCP-capable agent with web fetch), and it'll act as your setup wizard: checking your environment, walking you through Cloudflare signup if needed, deploying the worker, wiring it into your MCP client, and testing the whole thing end to end. You are never expected to read a long install guide — the agent does that for you.
+
+ChatGPT can also guide you through it, but it can't run commands or edit files, so the experience is text-only. See the ChatGPT section further down.
+
+---
+
+## The one-liner (recommended)
+
+Paste this single sentence into Claude Code. It's a natural-language version of the full setup — the agent will fetch this file, look at your current project so it can tailor the install, follow Prompt 0 below, and handle everything including asking you how you want to scope memory across your projects.
+
+```text
+Set up Recall, adapted and optimized for my project and the way I work. The
+repo is https://github.com/cashcon57/recall. Fetch SETUP_PROMPTS.md from it
+and follow "Prompt 0 — First-time setup" exactly. Before deploying, look at
+my current project to understand what I'm building, then ask me how I want
+to scope memory across my projects: single repo, shared pool across
+multiple repos, grouped by project type, per-repo isolated, or user-global.
+Walk me through every step.
+```
+
+That's it. If you only remember one thing from this file, remember that sentence.
 
 ---
 
 ## For Claude (Claude Code, Claude Desktop, or claude.ai)
 
-Claude Code can actually run the setup for you. ChatGPT cannot (see below for what to do there).
+### Prompt 0 — First-time setup (the full wizard)
 
-### Prompt 0 — First-time setup (Claude walks you through everything)
-
-Use this if you don't already have a Cloudflare account, haven't used `wrangler` before, or just want the full end-to-end experience guided. Claude will check your environment, walk you through account creation in a browser, optionally connect the Cloudflare MCP server so it can verify things directly, deploy Recall, and wire it into your MCP client. Paste it into Claude Code running in any directory.
+This is the expanded version that the one-liner points to. You don't normally need to paste this yourself — the one-liner above tells Claude to fetch it. But if you want to read what the agent will actually do, or adapt it to something unusual, here it is.
 
 ```text
 I want to deploy Recall (https://github.com/cashcon57/recall), a self-hosted
 MCP memory server, to Cloudflare. I've never done this before, so walk me
 through it start to finish. Do one step at a time, wait for me to confirm
 each step worked before moving to the next, and explain anything that might
-be unfamiliar.
+be unfamiliar. Adapt and optimize every recommendation you make to fit MY
+project and how I actually work — don't give me a generic install.
+
+Phase 0 — Understand my project (before doing anything else)
+
+0. Spend ~2 minutes understanding what I'm building and how. Read in the
+   current working directory:
+   - package.json / pyproject.toml / Cargo.toml / go.mod / Gemfile (to see
+     what language and framework)
+   - README.md (if it exists — get the project's purpose)
+   - CLAUDE.md or .cursor/rules or .github/copilot-instructions.md
+     (to see any conventions I've already written down)
+   - The top-level directory structure (mono-repo? single app? workers?
+     mobile? CLI? library?)
+   - .mcp.json or equivalent (what MCP servers I already have configured)
+   - Any other obvious signals (Dockerfile, wrangler.toml, fly.toml, etc.)
+
+   Then summarize back to me what you see in 3 to 5 sentences:
+   "You're building X, using Y, structured as Z. You already use MCP
+   servers A, B, C. I'll tailor Recall's install to this."
+
+   Use that context for every later decision — naming the worker,
+   picking the right memory scope, suggesting importance weights,
+   choosing the right CLAUDE.md integration, etc.
+
+   **Keep a running "adaptations log"** as you go through every phase.
+   Every time you make a choice that's tailored to my project (worker
+   name, scope, which repos to wire in, tags to suggest, author
+   handles, CLAUDE.md section wording, etc.), note WHY you picked it
+   in one line. You'll print this log back to me at the very end so I
+   can see exactly how my install differs from a generic install.
 
 Phase 1 — Local environment check
 
@@ -32,75 +80,139 @@ Phase 1 — Local environment check
 2. Pick a working directory for the repo. Suggest ~/recall. Ask if I want a
    different location. Do NOT create it yet.
 
-Phase 2 — Cloudflare account
+Phase 2 — Decide memory scoping
 
-3. Ask me if I already have a Cloudflare account. If no:
+3. Before we deploy anything, ask me how I want to organize memory across
+   my projects. Present these five options clearly and ask me to pick one.
+   Explain the tradeoffs in plain language:
+
+   A) SINGLE REPO — one Recall instance wired into just this repo's
+      .mcp.json. Simplest. Good if I'm experimenting or only have one
+      project that needs memory.
+
+   B) SHARED POOL ACROSS MULTIPLE REPOS — one Recall instance, wired into
+      several projects' .mcp.json files. Every project sees the same
+      memories. Good if I want knowledge to flow between projects (a
+      postgres gotcha learned on project A surfaces on project B).
+      One deploy, multiple config files. RECOMMENDED DEFAULT.
+
+   C) GROUPED BY PROJECT TYPE — separate Recall instances per category
+      (e.g. recall-work vs recall-personal, or recall-mobile vs recall-web).
+      Balance of isolation and cross-pollination within a group. Requires
+      N deploys, one per group. Each instance gets its own D1, Vectorize,
+      and API key.
+
+   D) PER-REPO ISOLATED — one Recall instance per repo, zero sharing.
+      Good for client work with confidentiality requirements. Heavy to
+      manage: warn me this is expensive to maintain and suggest (C) or
+      (B) unless I have a real reason.
+
+   E) USER-GLOBAL — one Recall instance wired into my user-level MCP
+      config (~/.claude.json for Claude Code, or the equivalent for
+      whatever client I use) so it follows me into any directory. Good
+      for a personal knowledge vault independent of project boundaries.
+
+   Give me a project-aware recommendation based on Phase 0. Examples:
+   - "You're in a mono-repo with 4 sub-projects — I'd recommend (B) so
+     knowledge flows across them, or (E) if you also want it in other
+     directories."
+   - "You're in a single React Native app — I'd recommend (A) or (E).
+     (B) is overkill until you have multiple projects."
+   - "I see you have work stuff and personal stuff in different parent
+     directories — I'd recommend (C) with recall-work and recall-personal
+     groups."
+   Then tell me: "If you're not sure, pick the one I recommended. You
+   can always split later with `wrangler deploy` on a new instance."
+
+4. Based on my answer, confirm the deploy plan BEFORE touching anything:
+   - A or E: single deploy, worker named `recall`
+   - B: single deploy, worker named `recall`, wired into N repos
+   - C: N deploys, workers named `recall-<group>`, I must give group names
+   - D: one deploy per repo, worker named `recall-<repo-name>`
+   For C and D, confirm the count and names with me out loud. For B,
+   ask me now for the list of repo paths I want wired in (I can give
+   them later if I don't know yet).
+
+Phase 3 — Cloudflare account
+
+5. Ask me if I already have a Cloudflare account. If no:
    a. Tell me to open https://dash.cloudflare.com/sign-up in a browser.
    b. Walk me through: email, password, email verification. Free plan only.
    c. Wait for me to confirm I've signed in.
    d. Remind me that I do NOT need to add a domain or payment method.
 
-4. Tell me to open https://dash.cloudflare.com/?to=/:account/ai/workers-ai
+6. Tell me to open https://dash.cloudflare.com/?to=/:account/ai/workers-ai
    in a browser and accept the Workers AI terms if prompted. This is the
    ONE manual browser step that can't be automated. Wait for me to confirm.
 
-5. Run `npx wrangler login` from my terminal. This opens a browser OAuth
+7. Run `npx wrangler login` from my terminal. This opens a browser OAuth
    flow that links wrangler to my account. Tell me to run it manually (you
    can't, because it needs browser interaction) and wait for me to confirm.
 
-6. After login, run `npx wrangler whoami`. Report the account email and
+8. After login, run `npx wrangler whoami`. Report the account email and
    account ID back to me. Confirm with me that this is the right account
    (people sometimes have multiple). If it's the wrong one, help me switch
    with `CLOUDFLARE_ACCOUNT_ID=<correct-id> wrangler ...`.
 
-Phase 3 — Optional: connect the Cloudflare MCP server
+Phase 4 — Optional: connect the Cloudflare MCP server
 
-7. Ask me if I want to connect the Cloudflare MCP server to Claude Code
+9. Ask me if I want to connect the Cloudflare MCP server to Claude Code
    BEFORE we deploy. This lets you (Claude) verify resources, check for
    naming collisions, and confirm things without me having to paste output.
-   It's optional but recommended for first-time setup.
+   Optional but recommended for first-time setup.
 
    If yes: edit my project's .mcp.json (or create it) to add:
 
-   {
-     "mcpServers": {
-       "cloudflare-bindings": {
-         "type": "http",
-         "url": "https://bindings.mcp.cloudflare.com/mcp"
-       },
-       "cloudflare-docs": {
-         "type": "http",
-         "url": "https://docs.mcp.cloudflare.com/mcp"
+     {
+       "mcpServers": {
+         "cloudflare-bindings": {
+           "type": "http",
+           "url": "https://bindings.mcp.cloudflare.com/mcp"
+         },
+         "cloudflare-docs": {
+           "type": "http",
+           "url": "https://docs.mcp.cloudflare.com/mcp"
+         }
        }
      }
-   }
 
    Tell me to restart Claude Code (or reload MCP servers with /mcp) and
    authenticate with Cloudflare when prompted. The bindings server will
    redirect to CF for OAuth. Wait for me to confirm both servers are
    connected. Use them throughout the rest of this setup where helpful.
 
-Phase 4 — Deploy Recall
+Phase 5 — Deploy Recall (adapt based on scoping choice from Phase 2)
 
-8. Clone the repo into the directory we picked:
-   git clone https://github.com/cashcon57/recall.git <dir>
-   cd <dir>
+10. Clone the repo into the directory we picked:
+    git clone https://github.com/cashcon57/recall.git <dir>
+    cd <dir>
 
-9. Before running setup.sh, use the cloudflare-bindings MCP (if connected)
-   to verify no existing D1 database is named `recall` and no Vectorize
-   index is named `recall-vectors`. If either exists, ask me whether to
-   reuse or bail out. If not connected, just proceed and let setup.sh
-   handle collisions.
+11. Before running setup.sh, check the cloudflare-bindings MCP (if connected)
+    for existing D1 databases and Vectorize indexes that would collide with
+    the worker name(s) from the scoping plan. If collisions exist, ask me
+    whether to reuse or rename. If not connected, proceed and let setup.sh
+    surface any collisions.
 
-10. Run `./setup.sh` and stream the output. Describe what each step does
-    as it happens (install deps, create D1, apply schema, create Vectorize
-    index, generate API key, deploy).
+12. Deploy, looping if the scoping choice requires multiple instances:
 
-11. When the script finishes, capture the worker URL (ends in .workers.dev)
-    and read the API key from the .recall-api-key file it created. Do NOT
-    print the key to the chat log — hold it in a variable for step 12.
+    For scoping A, B, or E (single deploy):
+      a. Run `./setup.sh` as-is. Stream output. Describe each step
+         (install deps, create D1, apply schema, create Vectorize
+         index, generate API key, deploy).
+      b. Capture the worker URL and read the API key from
+         .recall-api-key. Hold in a variable; never print to chat.
 
-12. Smoke test the deployment. Run:
+    For scoping C (grouped, N deploys) or D (per-repo, M deploys):
+      a. For each group/repo, edit wrangler.toml.example → wrangler.toml
+         with a unique `name` (e.g. `recall-work`) and unique
+         `database_name` / `index_name`. Git-stash or git-worktree
+         between deploys if needed to keep configs separate.
+      b. Run ./setup.sh for each, capturing the worker URL and API
+         key per instance. Keep them in a table for me to see.
+      c. Warn me if any deploy fails, and stop the loop until I
+         acknowledge.
+
+13. Smoke test each deployment:
     curl -s -X POST "$WORKER_URL/mcp" \
       -H "Authorization: Bearer $API_KEY" \
       -H "Content-Type: application/json" \
@@ -108,48 +220,113 @@ Phase 4 — Deploy Recall
     Confirm you see the 6 tool definitions in the response. If not,
     diagnose (auth? URL? deploy succeeded?) before moving on.
 
-Phase 5 — Wire Recall into my MCP client
+Phase 6 — Wire Recall into my MCP client(s)
 
-13. Ask me which MCP client I'll use Recall with:
-    - Claude Code (edits ./.mcp.json in the current project)
+14. Ask me which MCP client(s) I'll use Recall with:
+    - Claude Code (project-level: ./.mcp.json per repo; or user-level:
+      ~/.claude.json for scoping E)
     - Claude Desktop (via mcp-remote bridge)
     - Cursor / Windsurf / Cline / other
-    Based on my answer, edit the appropriate config file. Use env var
-    substitution ${RECALL_API_KEY} so the key is never committed.
+    Based on my answer AND the scoping choice from Phase 2, edit the
+    correct config file(s). Use env var substitution ${RECALL_API_KEY}
+    (or ${RECALL_API_KEY_<GROUP>} for scoping C) so keys are never
+    hardcoded or committed.
 
-14. Create a local .env file next to the config with:
-    RECALL_API_KEY=<the key from .recall-api-key>
-    Make sure it's chmod 600. Add .env to .gitignore if it isn't already.
-    Tell me how to source it before launching the client.
+    Scoping-specific wiring:
+    - A: edit ./.mcp.json in this one repo
+    - B: edit ./.mcp.json in every repo path I gave you in step 4
+    - C: edit ./.mcp.json in each repo, pointing at that group's worker
+    - D: edit ./.mcp.json in each repo, pointing at its own worker
+    - E: edit ~/.claude.json (user scope) so Recall follows me everywhere
 
-15. Offer to delete .recall-api-key now that the key is saved in .env
+15. Create a local .env file (or .env per repo, or ~/.env for E) with:
+    RECALL_API_KEY=<the key>
+    (For C, use distinct var names like RECALL_API_KEY_WORK,
+    RECALL_API_KEY_PERSONAL.)
+    Make sure each .env is chmod 600 and in .gitignore. Tell me how
+    to source it before launching the client.
+
+16. Offer to delete .recall-api-key now that the key is saved in .env
     and (hopefully) my secret manager. Wait for confirmation.
 
-Phase 6 — Verify and teach Claude to use it
+Phase 7 — Verify and teach Claude to use it
 
-16. Tell me to restart the MCP client and run /mcp (in Claude Code) or
-    the equivalent. Confirm `recall` shows as connected.
+17. Tell me to restart the MCP client and run /mcp (in Claude Code) or
+    the equivalent. Confirm `recall` shows as connected. For multi-instance
+    setups (C, D), verify each one separately.
 
-17. Call recall's list_memories tool to confirm it works end to end. It
+18. Call recall's list_memories tool to confirm it works end to end. It
     should return "No memories stored yet" or similar.
 
-18. Store one memory as a smoke test: a one-line description of this
+19. Store one memory as a smoke test: a one-line description of this
     project with key "setup-complete", importance 0.3, tag "meta",
     author whatever handle I tell you.
 
-19. Retrieve it immediately to confirm the store/query loop works.
+20. Retrieve it immediately to confirm the store/query loop works.
 
-20. Offer to run the "teach Claude to use Recall" prompt from
+21. Offer to run the "teach Claude to use Recall" prompt from
     SETUP_PROMPTS.md (Prompt 2) now, which adds a Memory Usage section
     to this project's CLAUDE.md. Wait for my answer.
 
+22. If I used scoping B, C, or D (multi-repo), offer to run Prompt 2
+    in each additional repo so all of them get the same CLAUDE.md
+    memory-usage section.
+
+Phase 8 — Optimization report (print this last, not first)
+
+23. Print an "Optimized for your setup" summary. Use the adaptations
+    log you've been keeping since Phase 0. Be specific and honest —
+    only list things you actually tailored to this user, not generic
+    Recall features.
+
+    Format it as a bullet list under a clear heading:
+
+    ### How this install was adapted to your setup
+
+    For each bullet, say WHAT you did and WHY based on what you saw
+    in my project. Examples of what good bullets look like:
+
+    - "Named the worker `recall-switchr` instead of `recall` because
+      you already have a `recall` worker in your account."
+    - "Picked scope (B) shared pool because I saw you have four
+      monorepo sub-projects (mobile, workers, chat-server,
+      memory-server) that share context like auth flows and DB schemas."
+    - "Wired Recall into ~/.claude.json (user scope) instead of
+      per-repo because your work spans more directories than just
+      this one, and you told me you switch projects often."
+    - "Suggested tags: mobile, workers, chat, memory, e2ee, security —
+      because those are the major subsystems I saw in your code."
+    - "Used `cash` as the author handle based on your git config."
+    - "Set importance default to 0.6 instead of 0.5 because your
+      CLAUDE.md shows you care about capturing subtle gotchas, and
+      you'll want those to rank higher on retrieval."
+    - "Skipped the `ALLOW_DESTRUCTIVE_TOOLS` enable step — you can
+      turn it on later if you ever need to wipe the store; default-
+      deny is safer given you're solo-admin."
+    - "Added a `team` tag convention because your project has a
+      second collaborator (I saw `andrew` in git log). Recall is
+      single-key, so you'll share it with him via your secret
+      manager; don't store credentials in it."
+
+    If I'm a solo dev with one repo, the report will be short.
+    If I'm a team with multiple repos, it will be longer. Both are
+    fine. Do NOT pad the list with generic Recall features that
+    apply to everyone.
+
+    End the report with ONE line telling me what to do next:
+    "You're all set. Start a new Claude Code session, ask me
+    something about this project, and I'll retrieve any stored
+    memories automatically."
+
 Rules throughout:
 - One phase at a time. Confirm with me before advancing.
-- Never print the API key in the chat log. Treat it like a password.
+- Never print any API key in the chat log. Treat each like a password.
 - If anything fails, diagnose before moving on. Don't mask errors.
 - If you need me to do something in a browser, stop, explain exactly
   what I'll see, and wait for me to confirm it worked.
-- Never ever commit the API key, .recall-api-key file, or .env to git.
+- Never commit any API key, .recall-api-key file, or .env to git.
+- For multi-instance setups (C, D), if N > 5 instances, STOP and ask
+  me if I really want that many. Suggest B or collapsing groups.
 ```
 
 ### Prompt 1 — Deploy Recall to your Cloudflare account

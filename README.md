@@ -73,9 +73,23 @@ Most MCP memory servers do one of two things: dump text into SQLite with cosine 
 
 ### Deploy
 
-Two options. Pick the one that matches your mood.
+**The easiest way: paste this into Claude Code.**
 
-**Option A — Run the script yourself:**
+```text
+Set up Recall, adapted and optimized for my project and the way I work. The
+repo is https://github.com/cashcon57/recall. Fetch SETUP_PROMPTS.md from it
+and follow "Prompt 0 — First-time setup" exactly. Before deploying, look at
+my current project to understand what I'm building, then ask me how I want
+to scope memory across my projects: single repo, shared pool across
+multiple repos, grouped by project type, per-repo isolated, or user-global.
+Walk me through every step.
+```
+
+That's it. Claude becomes the setup wizard: takes a look at your project, checks your environment, walks you through Cloudflare signup if you don't have an account, handles the Workers AI terms page, deploys the worker tuned for how you actually work, wires Recall into your MCP client config, and runs a smoke test. It'll ask how you want to organize memory across your projects before touching anything, so a solo dev with one repo and a team with ten repos get different setups tailored to them.
+
+No reading required. No copy-pasting commands. If you want to see what Claude will actually do, check [`SETUP_PROMPTS.md`](./SETUP_PROMPTS.md).
+
+**Prefer to run the script yourself?**
 
 ```bash
 git clone https://github.com/cashcon57/recall.git
@@ -83,11 +97,7 @@ cd recall
 ./setup.sh
 ```
 
-**Option B — Let Claude Code walk you through it:**
-
-Open Claude Code and paste the [Claude Code setup prompt](./SETUP_PROMPTS.md#prompt-0--first-time-setup-claude-walks-you-through-everything). Claude will check what's installed, guide you through signing up for Cloudflare if needed, optionally connect the Cloudflare MCP server so it can verify the account and check Workers AI access, run the deploy script, and wire Recall into your MCP client config. Good if you want hand-holding or haven't used Cloudflare before.
-
-### What the setup script does
+### What the setup actually does (either path)
 
 1. Log you in to Cloudflare if needed
 2. Create a D1 database, apply the schema, and patch `wrangler.toml` with the generated ID
