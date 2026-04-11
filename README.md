@@ -257,11 +257,30 @@ Results are ranked by:
 
 ## Team usage
 
-Recall works as a shared team memory with zero code changes. Everyone points at the same worker, passes the same API key, and distinguishes their contributions via the `author` field on each memory. Team retrieves default to the pooled store; personal focus comes from filtering by author.
+Recall supports two team modes. The wizard in `SETUP_PROMPTS.md` lets you pick either during Phase 2 scoping.
 
-**Important:** there is one API key. Teammates can read, overwrite, and delete each other's memories. Author is a convention, not access control. Don't store secrets.
+### Mode 1: Shared pool (simple, no real privacy)
 
-See [`TEAM_USAGE.md`](./TEAM_USAGE.md) for full team setup, conventions, privacy tradeoffs, and per-project `CLAUDE.md` templates your agents can follow.
+Everyone points at one worker, shares one API key, and distinguishes contributions via the `author` field on each memory. Team retrieves default to the pooled store; personal focus comes from filtering by author.
+
+There is one API key. Teammates can read, overwrite, and delete each other's memories. **Author is a convention, not access control.** Don't store secrets. Don't store anything one teammate should keep private from another.
+
+Good for: solo devs collaborating occasionally, small teams that trust each other completely, any setup where "everyone can see everything" is fine.
+
+### Mode 2: Team + per-user personal pools (real privacy)
+
+This is the **only option** that gives enforced privacy between teammates. Deploy two or more Recall instances on the same Cloudflare account:
+
+- **One team instance**, shared by everyone. Same API key for all teammates. This is where shared knowledge lives (architecture, gotchas, decisions).
+- **One personal instance per teammate.** Each teammate gets their own worker, their own D1 database, their own API key. Nobody else on the team can connect to it. This is where individual preferences live ("I like tabs", "my author handle is alice", "don't suggest emoji commits for me").
+
+Each teammate's `.mcp.json` has **two server entries** — `recall-team` and `recall-personal` — with different URLs and different env vars. The team URL is the same for everyone; the personal URL differs per teammate. When Claude retrieves, it queries both servers and merges the results. Personal entries override team conventions for that user only.
+
+This is the setup where "Alice tells Claude to do X and Bob tells Claude to do Y without conflicting" is actually true — because each personal pool is a literally different database with a different key.
+
+**How to pick:** if you have collaborators and want real privacy for personal preferences, pick mode 2. Otherwise mode 1 is simpler and fine. Cost is the same either way ($0/month on Cloudflare's free tier for typical use).
+
+See [`TEAM_USAGE.md`](./TEAM_USAGE.md) for full team setup, conventions, privacy tradeoffs, and per-project `CLAUDE.md` templates your agents can follow. The Claude Code setup wizard (via the one-liner at the top of this README) walks you through both modes interactively.
 
 ## Cleaning up CLAUDE.md and other memory files
 
@@ -543,7 +562,10 @@ Yes. `npx wrangler d1 export recall --output=backup.sql`. This gives you a SQLit
 Not directly — it uses CF-specific bindings (D1, Vectorize, Workers AI). Porting to a Node/Bun runtime with Postgres + pgvector + a local embedding model is possible but a non-trivial rewrite. PRs welcome if you do it.
 
 **Is this production-ready?**
-For personal and small-team use, yes. For mission-critical multi-tenant SaaS, no — Recall is single-tenant by design and has no per-user access control. See [`SECURITY.md`](./SECURITY.md) for the full threat model.
+For personal and small-team use, yes. For mission-critical multi-tenant SaaS, no — each Recall instance is single-tenant by design and has no per-user access control within an instance. See [`SECURITY.md`](./SECURITY.md) for the full threat model.
+
+**Can two teammates have different personal preferences without conflicting?**
+Yes, with option F in the setup wizard: "team + per-user personal pool". Deploy one shared team instance plus one personal instance per teammate. Each personal instance has its own API key only that teammate has. Claude queries both servers on retrieve and merges the results. Personal preferences override team conventions for that user only. This is the only configuration where cross-teammate privacy is enforced by code, not convention. See the [Team usage](#team-usage) section above for full details, or just paste the one-line install prompt at the top of this README and pick option F when asked.
 
 **How do I delete a single memory?**
 `delete_memory` with the key. The full store wipe (`clear_memories`) is default-disabled to prevent accidental/malicious bulk deletion.

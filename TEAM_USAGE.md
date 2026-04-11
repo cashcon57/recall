@@ -1,18 +1,33 @@
 # Team Usage
 
-How to run Recall as a shared memory layer for a small team of humans and agents — so that collective knowledge is pooled without stepping on individual notes.
+How to run Recall as a shared memory layer for a small team of humans and agents. There are two modes. Pick the one that matches how much you trust each other.
 
-## The model
+## Two modes
 
-Recall already has everything you need for team use, built around the `author` field on every memory:
+### Mode 1 — Shared pool (scoping option B in the wizard)
 
-- **One shared Recall instance** (one Cloudflare deployment, one D1 database, one Vectorize index).
-- **One shared `MEMORY_API_KEY`** that every team member loads into their MCP client.
-- **Each teammate uses a consistent `author` handle** (e.g. `cash`, `andrew`, `claude-cash`, `claude-andrew`).
-- **Team knowledge = unfiltered retrieval.** When any member (or their agent) runs `retrieve_memory` without an `author` filter, they see the pooled store.
-- **Personal scoping = author filter.** Filter `list_memories` or post-filter `retrieve_memory` results by your own handle to focus on what *you* wrote.
+One Recall instance, one API key, every teammate connects to the same thing. Everyone can read, write, and delete every memory. The `author` field is a convention only.
 
-This gives you the 90% use case without any code changes. Everyone contributes to a shared knowledge pool. Everyone can see everything. Everyone keeps their own corner via the author field.
+- **One shared Recall instance** (one Cloudflare deployment, one D1 database, one Vectorize index)
+- **One shared `MEMORY_API_KEY`** that every team member loads into their MCP client
+- **Each teammate uses a consistent `author` handle** (e.g. `alice`, `bob`, `claude-alice`)
+- **Team knowledge = unfiltered retrieval.** All memories show up for everyone.
+- **Personal scoping via author tag is a convention.** Filter `list_memories` by author to focus on what you wrote, but other teammates can still see and edit your memories.
+
+Best for: small teams that trust each other, setups where "everyone sees everything" is fine, simplest possible configuration.
+
+### Mode 2 — Team + per-user personal pools (scoping option F in the wizard)
+
+Multiple Recall instances. One team pool that everyone shares, plus one personal pool per teammate that only that teammate can access.
+
+- **One shared team instance** (e.g. `recall-<project>-team`) with one API key everyone uses
+- **One personal instance per teammate** (e.g. `recall-<project>-alice`, `recall-<project>-bob`) — each has its own D1 database and a unique API key only that teammate knows
+- **Each teammate's `.mcp.json`** has two server entries: `recall-team` and `recall-personal`. The team URL is identical across teammates; the personal URL and key differ.
+- **Claude queries both servers on retrieve** and merges the results. Personal entries override team conventions for that user only.
+
+Best for: collaborators who need real privacy for individual preferences, any setup where "alice's 'I prefer tabs' rule shouldn't apply to bob" matters. This is the only configuration where cross-teammate privacy is enforced by separate API keys, not convention.
+
+Both modes cost $0/month on Cloudflare's free tier for typical use. Mode 2 deploys more workers but each is tiny.
 
 ## Privacy: read this before you use it for secrets
 

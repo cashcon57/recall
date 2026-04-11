@@ -94,7 +94,7 @@ Phase 1 — Local environment check
 Phase 2 — Decide memory scoping
 
 3. Before we deploy anything, ask me how I want to organize memory across
-   my projects. Present these five options clearly and ask me to pick one.
+   my projects. Present these SIX options clearly and ask me to pick one.
    Explain the tradeoffs in plain language:
 
    A) SINGLE REPO — one Recall instance wired into just this repo's
@@ -105,7 +105,7 @@ Phase 2 — Decide memory scoping
       several projects' .mcp.json files. Every project sees the same
       memories. Good if I want knowledge to flow between projects (a
       postgres gotcha learned on project A surfaces on project B).
-      One deploy, multiple config files. RECOMMENDED DEFAULT.
+      One deploy, multiple config files. RECOMMENDED DEFAULT for solo devs.
 
    C) GROUPED BY PROJECT TYPE — separate Recall instances per category
       (e.g. recall-work vs recall-personal, or recall-mobile vs recall-web).
@@ -123,15 +123,46 @@ Phase 2 — Decide memory scoping
       whatever client I use) so it follows me into any directory. Good
       for a personal knowledge vault independent of project boundaries.
 
+   F) TEAM + PER-USER PERSONAL POOL — TWO or more Recall instances:
+      one shared team pool that every teammate reads and writes, plus
+      one personal pool per teammate that only they can access. This
+      is the ONLY option that gives real privacy between teammates —
+      because Recall is single-key per instance, the personal pool
+      each teammate gets a different API key nobody else has.
+
+      How it works at runtime:
+      - Team knowledge (architecture, gotchas, shared decisions) goes
+        to the team instance. Everyone sees it.
+      - Personal preferences ("I like tabs", "don't suggest emoji
+        commits", "my author handle is alice") go to the personal
+        instance. Only that teammate's Claude sees them.
+      - When Claude retrieves, it queries BOTH servers and merges
+        results. Personal entries override team conventions for that
+        user only.
+
+      Good if I'm working on a codebase with one or more collaborators
+      and we each want some private memory alongside our shared pool.
+      The only option where "teammate A can tell Claude to do X and
+      teammate B can tell Claude to do Y, and they don't conflict" is
+      actually true — because each personal pool is literally a
+      different database with a different key. RECOMMENDED DEFAULT
+      for teams.
+
    Give me a project-aware recommendation based on Phase 0. Examples:
-   - "You're in a mono-repo with 4 sub-projects — I'd recommend (B) so
-     knowledge flows across them, or (E) if you also want it in other
-     directories."
-   - "You're in a single React Native app — I'd recommend (A) or (E).
-     (B) is overkill until you have multiple projects."
-   - "I see you have work stuff and personal stuff in different parent
-     directories — I'd recommend (C) with recall-work and recall-personal
-     groups."
+   - "You're in a mono-repo with 4 sub-projects and git log shows
+     only one committer — I'd recommend (B). Shared pool across the
+     sub-projects, no multi-user concern."
+   - "You're in a single React Native app, only one committer —
+     I'd recommend (A) or (E). (B) is overkill until you have
+     multiple projects."
+   - "I see work stuff and personal stuff in different parent
+     directories, both yours — I'd recommend (C) with recall-work
+     and recall-personal groups."
+   - "Git log shows two committers (cash, andrew) on this repo. If
+     you want real privacy for each teammate's personal preferences,
+     (F) is the only option that enforces it. Otherwise (B) works
+     but everything is shared-by-default."
+
    Then tell me: "If you're not sure, pick the one I recommended. You
    can always split later with `wrangler deploy` on a new instance."
 
@@ -140,9 +171,23 @@ Phase 2 — Decide memory scoping
    - B: single deploy, worker named `recall`, wired into N repos
    - C: N deploys, workers named `recall-<group>`, I must give group names
    - D: one deploy per repo, worker named `recall-<repo-name>`
-   For C and D, confirm the count and names with me out loud. For B,
-   ask me now for the list of repo paths I want wired in (I can give
-   them later if I don't know yet).
+   - F: TEAM deploy (worker `recall-<project>-team`) PLUS one
+        PERSONAL deploy per teammate (worker `recall-<project>-<handle>`).
+        Ask me:
+        (a) The project name for the team worker (suggest from Phase 0)
+        (b) How many teammates, and their handles
+        (c) Which handle is mine (I'll get the personal key for this one)
+        (d) Whether teammates will run their own setup later or I'm
+            doing all deploys right now with their consent
+
+        For option F: I must give you my teammate handles out loud.
+        If I only give you my own handle, confirm that I'm setting
+        up a "team of one" structure that future teammates can add
+        themselves to later (just run setup.sh with a new handle).
+
+   For C, D, and F, confirm the count and names with me out loud. For
+   B, ask me now for the list of repo paths I want wired in (I can
+   give them later if I don't know yet).
 
 Phase 3 — Cloudflare account
 
@@ -223,6 +268,38 @@ Phase 5 — Deploy Recall (adapt based on scoping choice from Phase 2)
       c. Warn me if any deploy fails, and stop the loop until I
          acknowledge.
 
+    For scoping F (team + per-user personal pools):
+      a. Deploy the TEAM instance first. Edit wrangler.toml.example
+         → wrangler.toml with:
+         - name = "recall-<project>-team"
+         - database_name = "recall-<project>-team"
+         - index_name = "recall-<project>-team-vectors"
+         Run ./setup.sh. Capture the worker URL and team API key.
+      b. Then deploy ONE PERSONAL instance per teammate handle I
+         gave you in step 4. For each teammate:
+         - name = "recall-<project>-<handle>"
+         - database_name = "recall-<project>-<handle>"
+         - index_name = "recall-<project>-<handle>-vectors"
+         Run ./setup.sh for each. Capture the worker URL and
+         personal API key.
+      c. Report back a table of all deployed instances:
+         | Kind     | Worker name              | URL         | Key var             |
+         |----------|--------------------------|-------------|---------------------|
+         | team     | recall-switchr-team      | https://... | RECALL_TEAM_KEY     |
+         | personal | recall-switchr-cash      | https://... | RECALL_PERSONAL_KEY |
+         | personal | recall-switchr-andrew    | https://... | (for andrew)        |
+      d. IMPORTANT: for each personal instance, the API key belongs
+         to ONLY that teammate. Do NOT share it with the team. The
+         personal key for teammates other than me should be delivered
+         to them out of band (1Password, Signal, etc.) — don't commit
+         them, don't print them in my chat log more than necessary.
+      e. Warn me if any deploy fails, and stop the loop until I
+         acknowledge.
+      f. Before finishing Phase 5 for option F: remind me that each
+         teammate will need to set THEIR OWN personal key as an env
+         var on THEIR machine. I only need to set my own personal key
+         on my machine. Everyone sets the same team key.
+
 13. Smoke test each deployment:
     curl -s -X POST "$WORKER_URL/mcp" \
       -H "Authorization: Bearer $API_KEY" \
@@ -240,22 +317,73 @@ Phase 6 — Wire Recall into my MCP client(s)
     - Cursor / Windsurf / Cline / other
     Based on my answer AND the scoping choice from Phase 2, edit the
     correct config file(s). Use env var substitution ${RECALL_API_KEY}
-    (or ${RECALL_API_KEY_<GROUP>} for scoping C) so keys are never
+    (or distinct var names for grouped/team modes) so keys are never
     hardcoded or committed.
 
     Scoping-specific wiring:
-    - A: edit ./.mcp.json in this one repo
-    - B: edit ./.mcp.json in every repo path I gave you in step 4
-    - C: edit ./.mcp.json in each repo, pointing at that group's worker
-    - D: edit ./.mcp.json in each repo, pointing at its own worker
-    - E: edit ~/.claude.json (user scope) so Recall follows me everywhere
+    - A: edit ./.mcp.json in this one repo with ONE server entry
+      pointing at recall-<project>
+    - B: edit ./.mcp.json in every repo path I gave you in step 4,
+      ONE server entry each, all pointing at the same worker
+    - C: edit ./.mcp.json in each repo with ONE server entry, pointing
+      at that group's worker
+    - D: edit ./.mcp.json in each repo with ONE server entry, pointing
+      at its own worker
+    - E: edit ~/.claude.json (user scope) with ONE server entry so
+      Recall follows me everywhere
 
-15. Create a local .env file (or .env per repo, or ~/.env for E) with:
-    RECALL_API_KEY=<the key>
-    (For C, use distinct var names like RECALL_API_KEY_WORK,
-    RECALL_API_KEY_PERSONAL.)
+    - F: edit ./.mcp.json with TWO server entries. Both point at
+      Recall but go to different workers:
+
+        {
+          "mcpServers": {
+            "recall-team": {
+              "type": "http",
+              "url": "https://recall-<project>-team.<sub>.workers.dev/mcp",
+              "headers": {
+                "Authorization": "Bearer ${RECALL_TEAM_KEY}"
+              }
+            },
+            "recall-personal": {
+              "type": "http",
+              "url": "https://recall-<project>-<my-handle>.<sub>.workers.dev/mcp",
+              "headers": {
+                "Authorization": "Bearer ${RECALL_PERSONAL_KEY}"
+              }
+            }
+          }
+        }
+
+      The server names "recall-team" and "recall-personal" matter —
+      the CLAUDE.md rulebook in Phase 7c uses these names to tell
+      Claude which server to use for what. Do NOT pick different names.
+
+      This .mcp.json is identical for every teammate. The difference
+      is in their env vars: each teammate's RECALL_PERSONAL_KEY
+      resolves to THEIR personal instance's key. The team key is
+      the same for everyone.
+
+      If teammates use different handles, they will each need to
+      update the `recall-personal` URL to point at their own worker
+      when they set up on their machine. Mention this explicitly.
+
+15. Create a local .env file with all required keys:
+
+    For scopings A, B, C, D, E:
+      RECALL_API_KEY=<the key>
+      (For C, use distinct var names like RECALL_API_KEY_WORK,
+      RECALL_API_KEY_PERSONAL per group.)
+
+    For scoping F:
+      RECALL_TEAM_KEY=<team key, shared with teammates>
+      RECALL_PERSONAL_KEY=<my personal key, NEVER shared>
+
     Make sure each .env is chmod 600 and in .gitignore. Tell me how
-    to source it before launching the client.
+    to source it before launching the client. For option F,
+    explicitly warn me: "Never share RECALL_PERSONAL_KEY with
+    anyone — it's the only thing giving you true privacy on this
+    setup. If you leak it, rotate immediately with
+    `wrangler secret put MEMORY_API_KEY --name recall-<project>-<my-handle>`."
 
 16. Offer to delete .recall-api-key now that the key is saved in .env
     and (hopefully) my secret manager. Wait for confirmation.
@@ -373,9 +501,80 @@ Phase 7c — Teach Claude to use it
     SETUP_PROMPTS.md (Prompt 2) now, which adds a Memory Usage section
     to this project's CLAUDE.md. Wait for my answer.
 
-30. If I used scoping B, C, or D (multi-repo), offer to run Prompt 2
-    in each additional repo so all of them get the same CLAUDE.md
-    memory-usage section.
+    If I chose scoping F, use the F-specific variant of the rulebook
+    that includes server routing rules (team vs personal pool). See
+    "CLAUDE.md rulebook — option F variant" below.
+
+30. If I used scoping B, C, D, or F (multi-repo or multi-server),
+    offer to run the appropriate rulebook variant in each additional
+    repo so all of them get the same Memory Usage section.
+
+### CLAUDE.md rulebook — option F variant (team + per-user personal pool)
+
+For scoping F specifically, the Memory Usage section in CLAUDE.md
+must teach Claude when to use `recall-team` vs `recall-personal`.
+Insert this block (adapted to the user's handles) into CLAUDE.md:
+
+```text
+## Memory Usage (Recall, team + personal pools)
+
+This project uses two Recall memory instances:
+
+- `recall-team` — shared across all teammates. Everyone reads and
+  writes. Use for anything the whole team benefits from.
+- `recall-personal` — private to me only. Nobody else on the team
+  can see it. Use for my individual preferences and one-off notes.
+
+### When to retrieve
+
+Query BOTH servers at the start of any non-trivial task. Merge
+results. If a personal entry contradicts a team entry on a style
+or preference question, the personal entry wins for me. On factual
+questions (gotchas, architecture), the team entry wins.
+
+Practical rule: for every retrieve_memory call, fire two — one
+against each server — and combine them. If Claude Code's tool
+namespace distinguishes them as recall-team.retrieve_memory and
+recall-personal.retrieve_memory, call both explicitly.
+
+### When to store — pick the right server
+
+Store in `recall-team` when the memory is:
+- A gotcha, bug root cause, or cross-file invariant
+- An architectural decision the whole team should know
+- A convention that applies to everyone touching the codebase
+- Anything the user explicitly says "remember this for the team"
+
+Store in `recall-personal` when the memory is:
+- My individual preference ("I prefer X over Y", "don't do Z for me")
+- A workflow quirk specific to my machine or style
+- A one-off note I don't want to bother teammates with
+- Anything the user says "remember this just for me" or
+  "this is a personal thing" or "note to self"
+
+If unsure, ASK the user: "Should I store this as a team memory
+everyone sees, or a personal one only you see?"
+
+### Don't store secrets in either pool
+
+Neither server is encrypted at rest. The team key is shared. The
+personal key is yours alone but still stored on disk. Secrets go
+in a secret manager, not memories.
+
+### Team mode privacy guarantee
+
+`recall-personal` uses a separate API key that only I have. My
+teammates literally cannot connect to it. This is the ONE place
+in the Recall setup where privacy between teammates is enforced
+by code, not convention. Use it accordingly — but don't rely on
+it for anything you wouldn't be OK with being visible if your
+machine is ever shared or inspected.
+```
+
+When scoping F is used, the Phase 7d cleanup pass should also
+split destinations per memory: team-relevant gotchas go to
+recall-team, personal preferences go to recall-personal. Ask
+the user row-by-row when the destination is ambiguous.
 
 Phase 7d — Context file cleanup and optimization
 
