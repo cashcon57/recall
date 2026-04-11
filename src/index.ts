@@ -3,6 +3,13 @@ import { handleMcpRequest, parseJsonRpc } from './mcp';
 import { runConsolidationReport } from './tools';
 import type { Env, JsonRpcResponse } from './types';
 
+// ─── Constants ──────────────────────────────────────────────────────
+
+const MAX_REQUEST_BODY_BYTES = 1_000_000; // 1 MB — generous for normal MCP traffic
+const MIN_API_KEY_LENGTH = 32;            // soft-enforced at request time
+const RATE_LIMIT_PER_MIN = 60;
+const HEALTH_RESPONSE_CACHE_MS = 60_000;
+
 // ─── Per-isolate rate limiter ───────────────────────────────────────
 
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -33,6 +40,20 @@ function checkRateLimit(
   return true;
 }
 
+/**
+ * Derive a stable, non-reversible rate-limit bucket from the API key.
+ * Uses the full key so two keys with the same prefix don't collide.
+ */
+async function rateLimitBucket(apiKey: string): Promise<string> {
+  const data = new TextEncoder().encode(apiKey);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(digest);
+  // First 8 bytes is plenty for a bucket identifier
+  let hex = '';
+  for (let i = 0; i < 8; i++) hex += bytes[i].toString(16).padStart(2, '0');
+  return hex;
+}
+
 // ─── Worker fetch handler ───────────────────────────────────────────
 
 export default {
@@ -44,14 +65,26 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Health check — unauthenticated
+    // ── Startup sanity check on the API key ────────────────────
+    // Soft warning only — fail closed on missing, permit short keys with a log.
+    if (!env.MEMORY_API_KEY || env.MEMORY_API_KEY.length < MIN_API_KEY_LENGTH) {
+      if (!env.MEMORY_API_KEY) {
+        return Response.json(
+          { error: 'Server misconfigured: MEMORY_API_KEY secret is not set. Run `wrangler secret put MEMORY_API_KEY`.' },
+          { status: 503 },
+        );
+      }
+      console.warn(
+        `[recall] MEMORY_API_KEY is shorter than ${MIN_API_KEY_LENGTH} chars — consider rotating to a stronger key.`,
+      );
+    }
+
+    // Health check — unauthenticated, intentionally minimal (no version leak)
     if (url.pathname === '/health' && request.method === 'GET') {
-      return Response.json({
-        status: 'ok',
-        service: 'recall',
-        version: '1.0.0',
-        timestamp: new Date().toISOString(),
-      });
+      return Response.json(
+        { status: 'ok' },
+        { headers: { 'Cache-Control': `public, max-age=${HEALTH_RESPONSE_CACHE_MS / 1000}` } },
+      );
     }
 
     // Only /mcp is a valid endpoint
@@ -73,10 +106,11 @@ export default {
       return Response.json({ error: 'Invalid API key' }, { status: 401 });
     }
 
-    // ── Rate limiting (60 req/min per key prefix) ───────────────
-    if (!checkRateLimit(apiKey.slice(0, 8), 60, 60_000)) {
+    // ── Rate limiting (hashed bucket, full-key derived) ────────
+    const bucket = await rateLimitBucket(apiKey);
+    if (!checkRateLimit(bucket, RATE_LIMIT_PER_MIN, 60_000)) {
       return Response.json(
-        { error: 'Rate limit exceeded. Max 60 requests per minute.' },
+        { error: `Rate limit exceeded. Max ${RATE_LIMIT_PER_MIN} requests per minute.` },
         { status: 429 },
       );
     }
@@ -100,9 +134,42 @@ export default {
 // ─── POST /mcp — JSON-RPC requests ─────────────────────────────────
 
 async function handlePost(request: Request, env: Env): Promise<Response> {
+  // Enforce payload size limit to prevent memory exhaustion attacks.
+  // Trust Content-Length first, fall back to streaming byte count.
+  const contentLength = Number(request.headers.get('Content-Length') ?? '0');
+  if (contentLength > MAX_REQUEST_BODY_BYTES) {
+    return Response.json(
+      {
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32600, message: `Request body too large (max ${MAX_REQUEST_BODY_BYTES} bytes)` },
+      },
+      { status: 413, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  let bodyText: string;
+  try {
+    bodyText = await readBodyWithLimit(request, MAX_REQUEST_BODY_BYTES);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to read body';
+    const isSizeError = message.includes('too large');
+    return Response.json(
+      {
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32600, message },
+      },
+      {
+        status: isSizeError ? 413 : 400,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+  }
+
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(bodyText);
   } catch {
     return Response.json(
       {
@@ -122,9 +189,7 @@ async function handlePost(request: Request, env: Env): Promise<Response> {
     body !== null &&
     (body as Record<string, unknown>).method === 'initialize';
 
-  if (isInitialize) {
-    sessionId = crypto.randomUUID();
-  } else if (!sessionId) {
+  if (isInitialize || !sessionId) {
     sessionId = crypto.randomUUID();
   }
 
@@ -172,6 +237,41 @@ async function handlePost(request: Request, env: Env): Promise<Response> {
       { status: 400, headers: { 'Content-Type': 'application/json' } },
     );
   }
+}
+
+/**
+ * Stream-read the request body with a hard byte limit. Throws if the body
+ * exceeds `maxBytes`, preventing memory exhaustion from attackers who omit
+ * or lie about Content-Length.
+ */
+async function readBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
+  const reader = request.body?.getReader();
+  if (!reader) return '';
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+
+    total += value.byteLength;
+    if (total > maxBytes) {
+      reader.cancel();
+      throw new Error(`Request body too large (max ${maxBytes} bytes)`);
+    }
+    chunks.push(value);
+  }
+
+  // Concatenate and decode as UTF-8
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(combined);
 }
 
 // ─── Scheduled consolidation ───────────────────────────────────────

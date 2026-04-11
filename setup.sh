@@ -121,11 +121,22 @@ ok "Metadata indexes configured"
 log "→ Generating API key and setting secret"
 GENERATED_KEY="$(openssl rand -hex 32 2>/dev/null || node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
 
-echo "$GENERATED_KEY" | npx wrangler secret put MEMORY_API_KEY >/dev/null 2>&1 || {
-  warn "Automatic secret upload failed. Run manually:"
-  echo "    wrangler secret put MEMORY_API_KEY"
-  echo "    (paste the key when prompted)"
-}
+# Write to a temporary restricted file first, then pipe from the file to avoid
+# the key ever appearing in process args, shell history, or `ps` output.
+KEY_FILE="$(mktemp -t recall-setup-key.XXXXXX)"
+chmod 600 "$KEY_FILE"
+printf '%s' "$GENERATED_KEY" > "$KEY_FILE"
+
+if ! npx wrangler secret put MEMORY_API_KEY < "$KEY_FILE" >/dev/null 2>&1; then
+  warn "Automatic secret upload failed. Set it manually:"
+  echo "    npx wrangler secret put MEMORY_API_KEY"
+  echo "    (paste the key from $KEY_FILE when prompted)"
+fi
+
+# Save the key to a local file for the user to retrieve; delete the temp file.
+LOCAL_KEY_PATH="$SCRIPT_DIR/.recall-api-key"
+mv "$KEY_FILE" "$LOCAL_KEY_PATH"
+chmod 600 "$LOCAL_KEY_PATH"
 
 # ── Deploy ───────────────────────────────────────────────────────────
 
@@ -143,9 +154,16 @@ log "✓ Recall is live"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo
 [ -n "$WORKER_URL" ] && echo -e "  ${BOLD}Endpoint:${RESET} $WORKER_URL/mcp"
-echo -e "  ${BOLD}API key:${RESET} $GENERATED_KEY"
+echo -e "  ${BOLD}API key saved to:${RESET} $LOCAL_KEY_PATH (chmod 600)"
 echo
-echo -e "  ${DIM}Save the API key somewhere safe — it will not be shown again.${RESET}"
+echo -e "  ${DIM}The key is written to a local file rather than printed here so it${RESET}"
+echo -e "  ${DIM}does not end up in terminal scrollback or screen-sharing history.${RESET}"
+echo -e "  ${DIM}Retrieve it with:${RESET}"
+echo
+echo -e "    cat $LOCAL_KEY_PATH"
+echo
+echo -e "  ${BOLD}Move the key into a secret manager and delete the file when done:${RESET}"
+echo -e "    rm $LOCAL_KEY_PATH"
 echo
 echo -e "  Add to your MCP client (e.g., Claude Code):"
 echo -e "  ${DIM}{"

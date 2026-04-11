@@ -15,6 +15,7 @@ wrangler.toml.bak
 .env
 .dev.vars
 *.key
+.recall-api-key
 
 # OS
 .DS_Store

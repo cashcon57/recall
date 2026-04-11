@@ -5,6 +5,12 @@ export interface Env {
   VECTORS: VectorizeIndex;
   AI: Ai;
   MEMORY_API_KEY: string;
+  /**
+   * Optional: set to "true" via `wrangler secret put ALLOW_DESTRUCTIVE_TOOLS`
+   * or as a plain var to enable the `clear_memories` tool. Defaults to
+   * disabled so a leaked API key cannot wipe the entire store in one call.
+   */
+  ALLOW_DESTRUCTIVE_TOOLS?: string;
 }
 
 // --- Domain types ---
