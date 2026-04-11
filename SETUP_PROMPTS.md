@@ -509,7 +509,7 @@ Ask me if I want Claude to periodically check for Recall updates.
 Say exactly this (adapted to the user's voice):
 
 "Want me to set up a lightweight update check? Future Claude sessions
-in this project will ping the Recall repo every 14 days or so, notice
+in this project will ping the Recall repo every 2 days or so, notice
 if a new version tag has shipped, and offer to walk you through
 updating. It costs nothing token-wise until a check actually runs.
 Default: yes. Say no if you'd rather pin your current version forever
@@ -520,13 +520,13 @@ Wait for yes/no. If no, skip to Phase 7c. If yes, do all three:
 (a) Append the update-check rulebook to CLAUDE.md (project root):
 
 ```text
-## Recall update check (once per ~14 days)
+## Recall update check (once per ~2 days)
 
 Recall is pinned to a version tag, tracked in the file
 .recall-installed-version at the project root. New versions ship
 security fixes, performance improvements, and new features.
 
-At the start of a Claude Code session, if more than 14 days have
+At the start of a Claude Code session, if more than 2 days have
 passed since the timestamp in .recall-installed-version, run the
 update check. Never block or delay an in-progress task to run it —
 check at session start only, in the first idle moment, never
@@ -658,7 +658,7 @@ per-machine state, not shared config. Each teammate's timestamp is
 independent.
 
 After the three edits, tell the user: "The update check is passive.
-Future Claude sessions will ping the repo every 14 days, tell you if
+Future Claude sessions will ping the repo every 2 days, tell you if
 something new shipped, and let you decide whether to update. You can
 always manually force a check by telling Claude 'check for Recall
 updates'."
