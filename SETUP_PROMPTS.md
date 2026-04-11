@@ -522,33 +522,124 @@ Wait for yes/no. If no, skip to Phase 7c. If yes, do all three:
 ```text
 ## Recall update check (once per ~14 days)
 
-Recall is pinned to a version tag in .mcp.json and in the file
+Recall is pinned to a version tag, tracked in the file
 .recall-installed-version at the project root. New versions ship
-security fixes and features. At the start of a Claude Code session,
-if more than 14 days have passed since the timestamp in
-.recall-installed-version (last-checked field), run the update check:
+security fixes, performance improvements, and new features.
+
+At the start of a Claude Code session, if more than 14 days have
+passed since the timestamp in .recall-installed-version, run the
+update check. Never block or delay an in-progress task to run it —
+check at session start only, in the first idle moment, never
+mid-task.
+
+The update check is NOT "run an upgrade." It is a THREE-STAGE
+process: detect, contextualize, then offer.
+
+STAGE 1 — Detect
 
 1. WebFetch https://api.github.com/repos/cashcon57/recall/releases/latest
    and parse the tag_name field.
 2. Compare to the pinned=... line in .recall-installed-version.
-3. If upstream is newer, tell the user:
+3. If upstream is the same as pinned: update only the last-checked
+   timestamp in .recall-installed-version and move on silently. Do
+   NOT mention the check to the user.
+4. If upstream is newer: proceed to Stage 2.
 
-   "Recall has a new version: upstream-tag (current: pinned-tag).
-    Changelog: https://github.com/cashcon57/recall/releases/latest
-    Want me to walk you through updating? It usually means re-deploying
-    the worker with the new tag and re-running the smoke test. Most
-    updates are safe without full re-install."
+STAGE 2 — Contextualize the update for THIS user's project
 
-4. If yes: fetch the new tag's SETUP_PROMPTS.md and run Phase 5
-   (deploy), Phase 7b (smoke test), and Phase 7c (refresh the
-   CLAUDE.md rulebook in case it changed). Then update the pinned
-   field in .recall-installed-version.
-5. If no: update only the last-checked field so the check doesn't
-   fire again for 14 more days.
+Do NOT show the user a generic "new version available" prompt.
+Before saying anything to the user, do this homework:
 
-Run this check at most once every 14 days. Never block or delay an
-in-progress task to run it — check at session start only, in the
-first idle moment.
+5. WebFetch the release notes for the new tag:
+   https://api.github.com/repos/cashcon57/recall/releases/latest
+   Parse the "body" field — it's markdown, use it directly.
+6. WebFetch the CHANGELOG or compare view between the user's
+   pinned tag and the new tag:
+   https://github.com/cashcon57/recall/compare/<pinned>...<newtag>
+   Read the commit messages to understand what actually changed.
+7. Re-inspect the user's current project the same way Phase 0 did
+   on first install: package.json, CLAUDE.md, .mcp.json, rough
+   directory structure. You want to know what kind of project
+   this is NOW — it might have changed since install.
+8. For each notable change in the release, decide whether it
+   applies to THIS user's project. Ask yourself:
+   - Is this a security fix? (Always applies. Mark as high priority.)
+   - Is this a performance improvement to a path the user actually
+     hits? (e.g., reranker token savings → yes if they retrieve
+     often; new feature for team mode → no if they're solo.)
+   - Is this a new scoping option or wizard phase they opted out
+     of? (Probably irrelevant to their setup.)
+   - Is this a bug fix for a code path they use?
+
+9. Build a user-facing summary with THREE parts:
+   a. What's in the update (1-2 sentences, plain language, no jargon)
+   b. Whether it helps THIS project specifically, and why (or why not)
+   c. What updating would actually do to their setup (re-deploy
+      the worker, re-run smoke test, refresh CLAUDE.md rulebook,
+      etc.). Be specific — don't say "it'll update things."
+
+   Example of a good contextualized prompt:
+
+   "Recall v1.1.0 shipped. Here's what changed and whether it
+   matters for you:
+
+   - Security: hashed rate-limit bucket now uses SHA-512 instead
+     of SHA-256. This is a minor hardening improvement. You're
+     currently on v1.0.0 which uses SHA-256 — still secure, but
+     this tightens it.
+   - Feature: the wizard now supports scoping option G (per-team
+     regional replicas). You're on option B (shared pool across
+     your mono-repo), so this doesn't apply to you.
+   - Fix: the reranker fallback now handles empty result sets
+     correctly. You WILL benefit from this — I've seen your
+     retrieve queries return empty sets a few times this month.
+
+   What updating would do for your setup:
+   - Re-deploy the worker to your existing recall D1 instance
+     (no data loss, no key rotation required)
+   - Re-run the Phase 7b functional smoke test against the new
+     worker
+   - Refresh the Memory Usage section in CLAUDE.md in case the
+     rulebook changed (it didn't this release)
+
+   Total time: about 2 minutes. Want me to proceed?"
+
+   Example of a BAD prompt (do not do this):
+
+   "A new version of Recall is available: v1.1.0. Want to update?"
+
+   (That's what v1.0.0 did and it's useless. Always contextualize.)
+
+STAGE 3 — Offer, adapt, apply
+
+10. If the user says yes:
+    a. Fetch SETUP_PROMPTS.md at the NEW tag, not main.
+    b. Run ONLY the phases the release notes indicate are
+       necessary. Don't re-run the full wizard unless the release
+       explicitly says full re-install is required. Typical
+       update: Phase 5 (re-deploy with new code) + Phase 7b
+       (smoke test) + Phase 7c rulebook refresh if changed.
+    c. Adapt every instruction to this user's project, the same
+       way Phase 0 does on first install. If the new tag added a
+       deploy-time decision (e.g., "do you want to enable
+       feature X?"), ask the user BEFORE applying it, with a
+       project-aware recommendation.
+    d. Update .recall-installed-version with the new tag and
+       today's date after a successful update.
+    e. Append a one-line note to CLAUDE.md's "Adaptations log"
+       section (if one exists) summarizing what was updated.
+
+11. If the user says no (or "remind me later"):
+    a. Update only the last-checked field in .recall-installed-version
+       so the check doesn't fire again for 14 more days.
+    b. Do NOT pester the user about the same version again.
+    c. If a user says "never ask about Recall updates again",
+       delete the update-check section from CLAUDE.md and stop.
+
+12. If the release notes mention a SECURITY fix AND the user
+    declines the update: tell the user clearly which fix they
+    are skipping and the risk in one sentence. Do not argue
+    further, but make sure they understood what they declined.
 ```
 
 (b) Create the pointer file `.recall-installed-version` at the project
