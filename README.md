@@ -245,9 +245,112 @@ Results are ranked by:
 
 Recall works as a shared team memory with zero code changes. Everyone points at the same worker, passes the same API key, and distinguishes their contributions via the `author` field on each memory. Team retrieves default to the pooled store; personal focus comes from filtering by author.
 
-**Important:** there is one API key. Teammates can read, overwrite, and delete each other's memories — author is a convention, not access control. Don't store secrets.
+**Important:** there is one API key. Teammates can read, overwrite, and delete each other's memories. Author is a convention, not access control. Don't store secrets.
 
 See [`TEAM_USAGE.md`](./TEAM_USAGE.md) for full team setup, conventions, privacy tradeoffs, and per-project `CLAUDE.md` templates your agents can follow.
+
+## Cleaning up CLAUDE.md and other memory files
+
+Once Recall is connected, your existing `CLAUDE.md`, scattered `gotchas.md` / `notes.md` files, and built-in agent memory start duplicating what Recall can now do on demand. Cleanup is optional but recommended. Claude Code can do it for you in one shot.
+
+### The division of responsibilities
+
+**Keep in `CLAUDE.md`** (paid on every turn, so it should stay small):
+
+- Always-on conventions ("use snake_case for DB columns", "components go in `src/components/`")
+- Build, test, and deploy commands
+- Hard rules the agent must never violate
+- A one-paragraph project orientation
+
+**Move to Recall** (paid only when relevant):
+
+- Gotchas and bug root causes
+- Architectural decisions and the *why* behind them
+- "That time we fixed X by doing Y"
+- Subtle API behavior that isn't in the docs
+- Anything you'd write "the reason we do this is..." about
+
+**Delete from both** (derivable from the code itself):
+
+- File path lists, directory trees, function signatures
+- "This project uses React 19.2 and TypeScript" (read `package.json`)
+- Anything `git blame` or `grep` could answer
+
+### The token math
+
+A 4 KB `CLAUDE.md` costs about 1,000 tokens on every single turn. At 300 turns per day that's 300K tokens of `CLAUDE.md` you're paying for, most of it irrelevant to the current task. Shrinking to 1 KB of always-on rules and moving the situational 3 KB into Recall saves roughly 225K tokens per day. You lose nothing, because `retrieve_memory` surfaces the relevant entries when they actually matter.
+
+### Prompt — have Claude do the cleanup for you
+
+Paste this into Claude Code, running in the project you want to clean up:
+
+```text
+I just connected the `recall` MCP memory server to this project. I want you
+to migrate my existing context files into Recall so I stop paying tokens on
+stale context every turn. Do this carefully, one file at a time, and ask me
+before deleting anything.
+
+1. Verify `recall` is connected. Run /mcp or list_memories. If it's not
+   connected, stop and tell me how to fix it before continuing.
+
+2. Find all local context files in this repo and my home directory that
+   might overlap with Recall:
+   - CLAUDE.md (project root, any subdirectories, and ~/.claude/CLAUDE.md)
+   - Any gotchas.md, notes.md, decisions.md, architecture.md, lessons.md,
+     context.md, or similarly named files in the repo
+   - ~/.claude/projects/<this-project>/memory/ if it exists
+   List them and the size of each. Ask me to confirm the list before proceeding.
+
+3. For each file, read it and categorize every section or bullet point into
+   one of three buckets:
+
+   a) KEEP IN CLAUDE.md — always-on conventions, build commands, hard rules,
+      one-paragraph project orientation. Small, stable, applies to every turn.
+
+   b) MOVE TO RECALL — gotchas, bug root causes, architectural decisions and
+      their reasoning, "don't do X because Y" rules, subtle API behavior,
+      past-tense stories. Situational.
+
+   c) DELETE — derivable from the code (file paths, function signatures, tech
+      stack lists), duplicated elsewhere, or stale.
+
+4. Show me the categorization as a table or list BEFORE making any changes.
+   Let me correct misclassifications. Do not touch any file until I approve
+   the plan.
+
+5. Once I approve:
+   - For each MOVE TO RECALL item, call `store_memory` with a descriptive
+     kebab-case key, appropriate tags (architecture, gotcha, decision, etc.),
+     importance between 0.5 and 0.9 based on how load-bearing the info is,
+     and author set to my handle (ask me what to use).
+   - After each store_memory, tell me the key you used so I can track it.
+   - Do NOT batch store_memory calls. One at a time so I can interrupt if
+     something looks wrong.
+
+6. Rewrite CLAUDE.md with only the KEEP items. Aim for under 1 KB if possible.
+   Preserve any existing "Memory Usage (recall MCP server)" section at the
+   bottom.
+
+7. For files being fully deleted (gotchas.md etc.), show me a diff preview
+   and ask for confirmation before `rm`.
+
+8. Report the before/after CLAUDE.md size, the number of memories stored in
+   Recall, and any files deleted. Estimate the tokens-per-turn saved.
+
+Important rules:
+- Never delete a file you haven't fully migrated first.
+- Never store secrets in Recall (API keys, passwords, private keys). Skip
+  those items and warn me if you see any in the source files.
+- If an item could belong in both buckets (conventions with historical
+  context), prefer CLAUDE.md if it's short and always-on, Recall if the
+  historical context is the point.
+- Skip `~/.claude/projects/<project>/memory/` for now. That's Claude Code's
+  built-in per-project state and overlaps differently.
+```
+
+This is a destructive operation. Review the agent's categorization table before approving step 5. If you're nervous, start with a single file (e.g., just `gotchas.md`) and run the prompt repeatedly.
+
+See [`SETUP_PROMPTS.md`](./SETUP_PROMPTS.md) for additional prompts covering deploy, agent wiring, and team onboarding.
 
 ## Architecture
 
