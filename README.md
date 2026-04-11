@@ -73,13 +73,21 @@ Most MCP memory servers do one of two things: dump text into SQLite with cosine 
 
 ### Deploy
 
+Two options. Pick the one that matches your mood.
+
+**Option A — Run the script yourself:**
+
 ```bash
 git clone https://github.com/cashcon57/recall.git
 cd recall
 ./setup.sh
 ```
 
-The setup script will:
+**Option B — Let Claude Code walk you through it:**
+
+Open Claude Code and paste the [Claude Code setup prompt](./SETUP_PROMPTS.md#prompt-0--first-time-setup-claude-walks-you-through-everything). Claude will check what's installed, guide you through signing up for Cloudflare if needed, optionally connect the Cloudflare MCP server so it can verify the account and check Workers AI access, run the deploy script, and wire Recall into your MCP client config. Good if you want hand-holding or haven't used Cloudflare before.
+
+### What the setup script does
 
 1. Log you in to Cloudflare if needed
 2. Create a D1 database, apply the schema, and patch `wrangler.toml` with the generated ID

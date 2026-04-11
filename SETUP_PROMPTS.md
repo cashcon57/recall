@@ -8,9 +8,153 @@ Copy-paste these prompts into Claude or ChatGPT to walk through Recall setup and
 
 Claude Code can actually run the setup for you. ChatGPT cannot (see below for what to do there).
 
+### Prompt 0 — First-time setup (Claude walks you through everything)
+
+Use this if you don't already have a Cloudflare account, haven't used `wrangler` before, or just want the full end-to-end experience guided. Claude will check your environment, walk you through account creation in a browser, optionally connect the Cloudflare MCP server so it can verify things directly, deploy Recall, and wire it into your MCP client. Paste it into Claude Code running in any directory.
+
+```text
+I want to deploy Recall (https://github.com/cashcon57/recall), a self-hosted
+MCP memory server, to Cloudflare. I've never done this before, so walk me
+through it start to finish. Do one step at a time, wait for me to confirm
+each step worked before moving to the next, and explain anything that might
+be unfamiliar.
+
+Phase 1 — Local environment check
+
+1. Check what I have installed. Report back:
+   - Node.js version (need 20+)
+   - git
+   - curl
+   - Whether `npx wrangler whoami` succeeds
+   If Node.js is missing or below 20, tell me to install it from nodejs.org
+   and stop until I confirm. Do not try to install it for me.
+
+2. Pick a working directory for the repo. Suggest ~/recall. Ask if I want a
+   different location. Do NOT create it yet.
+
+Phase 2 — Cloudflare account
+
+3. Ask me if I already have a Cloudflare account. If no:
+   a. Tell me to open https://dash.cloudflare.com/sign-up in a browser.
+   b. Walk me through: email, password, email verification. Free plan only.
+   c. Wait for me to confirm I've signed in.
+   d. Remind me that I do NOT need to add a domain or payment method.
+
+4. Tell me to open https://dash.cloudflare.com/?to=/:account/ai/workers-ai
+   in a browser and accept the Workers AI terms if prompted. This is the
+   ONE manual browser step that can't be automated. Wait for me to confirm.
+
+5. Run `npx wrangler login` from my terminal. This opens a browser OAuth
+   flow that links wrangler to my account. Tell me to run it manually (you
+   can't, because it needs browser interaction) and wait for me to confirm.
+
+6. After login, run `npx wrangler whoami`. Report the account email and
+   account ID back to me. Confirm with me that this is the right account
+   (people sometimes have multiple). If it's the wrong one, help me switch
+   with `CLOUDFLARE_ACCOUNT_ID=<correct-id> wrangler ...`.
+
+Phase 3 — Optional: connect the Cloudflare MCP server
+
+7. Ask me if I want to connect the Cloudflare MCP server to Claude Code
+   BEFORE we deploy. This lets you (Claude) verify resources, check for
+   naming collisions, and confirm things without me having to paste output.
+   It's optional but recommended for first-time setup.
+
+   If yes: edit my project's .mcp.json (or create it) to add:
+
+   {
+     "mcpServers": {
+       "cloudflare-bindings": {
+         "type": "http",
+         "url": "https://bindings.mcp.cloudflare.com/mcp"
+       },
+       "cloudflare-docs": {
+         "type": "http",
+         "url": "https://docs.mcp.cloudflare.com/mcp"
+       }
+     }
+   }
+
+   Tell me to restart Claude Code (or reload MCP servers with /mcp) and
+   authenticate with Cloudflare when prompted. The bindings server will
+   redirect to CF for OAuth. Wait for me to confirm both servers are
+   connected. Use them throughout the rest of this setup where helpful.
+
+Phase 4 — Deploy Recall
+
+8. Clone the repo into the directory we picked:
+   git clone https://github.com/cashcon57/recall.git <dir>
+   cd <dir>
+
+9. Before running setup.sh, use the cloudflare-bindings MCP (if connected)
+   to verify no existing D1 database is named `recall` and no Vectorize
+   index is named `recall-vectors`. If either exists, ask me whether to
+   reuse or bail out. If not connected, just proceed and let setup.sh
+   handle collisions.
+
+10. Run `./setup.sh` and stream the output. Describe what each step does
+    as it happens (install deps, create D1, apply schema, create Vectorize
+    index, generate API key, deploy).
+
+11. When the script finishes, capture the worker URL (ends in .workers.dev)
+    and read the API key from the .recall-api-key file it created. Do NOT
+    print the key to the chat log — hold it in a variable for step 12.
+
+12. Smoke test the deployment. Run:
+    curl -s -X POST "$WORKER_URL/mcp" \
+      -H "Authorization: Bearer $API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | head -80
+    Confirm you see the 6 tool definitions in the response. If not,
+    diagnose (auth? URL? deploy succeeded?) before moving on.
+
+Phase 5 — Wire Recall into my MCP client
+
+13. Ask me which MCP client I'll use Recall with:
+    - Claude Code (edits ./.mcp.json in the current project)
+    - Claude Desktop (via mcp-remote bridge)
+    - Cursor / Windsurf / Cline / other
+    Based on my answer, edit the appropriate config file. Use env var
+    substitution ${RECALL_API_KEY} so the key is never committed.
+
+14. Create a local .env file next to the config with:
+    RECALL_API_KEY=<the key from .recall-api-key>
+    Make sure it's chmod 600. Add .env to .gitignore if it isn't already.
+    Tell me how to source it before launching the client.
+
+15. Offer to delete .recall-api-key now that the key is saved in .env
+    and (hopefully) my secret manager. Wait for confirmation.
+
+Phase 6 — Verify and teach Claude to use it
+
+16. Tell me to restart the MCP client and run /mcp (in Claude Code) or
+    the equivalent. Confirm `recall` shows as connected.
+
+17. Call recall's list_memories tool to confirm it works end to end. It
+    should return "No memories stored yet" or similar.
+
+18. Store one memory as a smoke test: a one-line description of this
+    project with key "setup-complete", importance 0.3, tag "meta",
+    author whatever handle I tell you.
+
+19. Retrieve it immediately to confirm the store/query loop works.
+
+20. Offer to run the "teach Claude to use Recall" prompt from
+    SETUP_PROMPTS.md (Prompt 2) now, which adds a Memory Usage section
+    to this project's CLAUDE.md. Wait for my answer.
+
+Rules throughout:
+- One phase at a time. Confirm with me before advancing.
+- Never print the API key in the chat log. Treat it like a password.
+- If anything fails, diagnose before moving on. Don't mask errors.
+- If you need me to do something in a browser, stop, explain exactly
+  what I'll see, and wait for me to confirm it worked.
+- Never ever commit the API key, .recall-api-key file, or .env to git.
+```
+
 ### Prompt 1 — Deploy Recall to your Cloudflare account
 
-```
+```text
 I want you to deploy Recall, a self-hosted MCP memory server, to my Cloudflare
 account. The repo is at https://github.com/cashcon57/recall
 
@@ -52,7 +196,7 @@ and tell me exactly what to do.
 After the server is deployed and connected, run this prompt in the project
 where you want Claude to use Recall:
 
-```
+```text
 I just connected a memory MCP server called `recall` to this project. I want
 you to use it throughout our work together. Do this now:
 
@@ -104,7 +248,7 @@ you to use it throughout our work together. Do this now:
 ChatGPT cannot run shell commands or edit files on your machine. It can only
 walk you through setup step-by-step. Here is a prompt to do that:
 
-```
+```text
 I want to deploy Recall, a self-hosted MCP memory server, to my Cloudflare
 account. The repo is at https://github.com/cashcon57/recall
 
