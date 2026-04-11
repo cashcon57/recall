@@ -1,0 +1,39 @@
+{
+  "name": "recall-mcp",
+  "version": "1.0.0",
+  "description": "Self-hosted MCP memory server with hybrid semantic + keyword search, running on Cloudflare Workers",
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cashcon57/recall.git"
+  },
+  "homepage": "https://github.com/cashcon57/recall",
+  "bugs": {
+    "url": "https://github.com/cashcon57/recall/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "memory",
+    "claude",
+    "cloudflare-workers",
+    "vectorize",
+    "rag",
+    "semantic-search",
+    "hybrid-search",
+    "self-hosted"
+  ],
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit",
+    "setup": "./setup.sh"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260408.1",
+    "typescript": "^6.0.2",
+    "wrangler": "^4.81.0"
+  }
+}

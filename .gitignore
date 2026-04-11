@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build / cache
+.wrangler/
+dist/
+.cache/
+*.tsbuildinfo
+
+# Local config (contains database_id after setup)
+wrangler.toml
+wrangler.toml.bak
+
+# Secrets
+.env
+.dev.vars
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp

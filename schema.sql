@@ -1,0 +1,27 @@
+-- Recall: D1 schema for memory storage + FTS5 keyword search
+
+CREATE TABLE IF NOT EXISTS memories (
+  id TEXT PRIMARY KEY,
+  key TEXT UNIQUE NOT NULL,
+  content TEXT NOT NULL,
+  tags TEXT NOT NULL DEFAULT '[]',
+  importance REAL NOT NULL DEFAULT 0.5,
+  author TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  accessed_at TEXT NOT NULL,
+  access_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
+CREATE INDEX IF NOT EXISTS idx_memories_author ON memories(author);
+CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
+CREATE INDEX IF NOT EXISTS idx_memories_accessed_at ON memories(accessed_at);
+
+-- FTS5 virtual table for keyword/BM25 search (hybrid search with Vectorize)
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+  key,
+  content,
+  tags,
+  tokenize='porter unicode61'
+);

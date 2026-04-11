@@ -1,0 +1,33 @@
+# Recall — Cloudflare Workers configuration template
+#
+# Copy this file to `wrangler.toml` and fill in the placeholders.
+# The `database_id` is generated when you run `wrangler d1 create`.
+# Everything else can stay as-is unless you want to customize names.
+#
+# Secrets are NOT set here. After deploy, run:
+#   wrangler secret put MEMORY_API_KEY
+
+name = "recall"
+main = "src/index.ts"
+compatibility_date = "2025-03-01"
+
+# ── D1 (SQLite) — stores memory metadata, content, and FTS5 index ──
+[[d1_databases]]
+binding = "DB"
+database_name = "recall"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# ── Vectorize — semantic search index (1024D, cosine, for bge-m3) ──
+[[vectorize]]
+binding = "VECTORS"
+index_name = "recall-vectors"
+
+# ── Workers AI — embeddings (bge-m3) and reranking (bge-reranker-base) ──
+[ai]
+binding = "AI"
+
+# ── Weekly memory consolidation — runs Sunday 03:00 UTC by default ──
+# Generates a read-only report of duplicates + stale memories, stored
+# as a searchable memory keyed `_system.consolidation-report`.
+[triggers]
+crons = ["0 3 * * SUN"]
