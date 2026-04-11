@@ -76,18 +76,14 @@ Most MCP memory servers do one of two things: dump text into SQLite with cosine 
 **The easiest way: paste this into Claude Code.**
 
 ```text
-Set up Recall, adapted and optimized for my project and the way I work. The
-repo is https://github.com/cashcon57/recall. Fetch SETUP_PROMPTS.md from it
-and follow "Prompt 0 — First-time setup" exactly. Before deploying, look at
-my current project to understand what I'm building, then ask me how I want
-to scope memory across my projects: single repo, shared pool across
-multiple repos, grouped by project type, per-repo isolated, or user-global.
-Walk me through every step.
+Use WebFetch to read https://raw.githubusercontent.com/cashcon57/recall/v1.0.0/SETUP_PROMPTS.md. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
 ```
 
-That's it. Claude becomes the setup wizard: takes a look at your project, checks your environment, walks you through Cloudflare signup if you don't have an account, handles the Workers AI terms page, deploys the worker tuned for how you actually work, wires Recall into your MCP client config, and runs a smoke test. It'll ask how you want to organize memory across your projects before touching anything, so a solo dev with one repo and a team with ten repos get different setups tailored to them.
+Claude becomes the setup wizard: inspects your project, checks your environment, walks you through Cloudflare signup if you don't have an account, handles the Workers AI terms page, deploys the worker tuned for how you actually work, wires Recall into your MCP client config, and runs a full functional smoke test (hybrid search, reranker, security gates, auth). It asks how you want to organize memory across your projects before touching anything, so a solo dev with one repo and a team with ten repos get different setups tailored to them. At the end, it prints a report showing exactly how your install was adapted.
 
-No reading required. No copy-pasting commands. If you want to see what Claude will actually do, check [`SETUP_PROMPTS.md`](./SETUP_PROMPTS.md).
+No reading required. No copy-pasting commands. The command is pinned to the `v1.0.0` release tag so it behaves identically every time.
+
+Want to read what Claude will actually do? See [`SETUP_PROMPTS.md`](./SETUP_PROMPTS.md) — including a short "Why is the one-liner written that way?" explainer covering the four levers (pinning, explicit tool, integrity check, verbatim execution) that make the command deterministic.
 
 **Prefer to run the script yourself?**
 

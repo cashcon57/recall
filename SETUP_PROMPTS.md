@@ -8,19 +8,30 @@ ChatGPT can also guide you through it, but it can't run commands or edit files, 
 
 ## The one-liner (recommended)
 
-Paste this single sentence into Claude Code. It's a natural-language version of the full setup — the agent will fetch this file, look at your current project so it can tailor the install, follow Prompt 0 below, and handle everything including asking you how you want to scope memory across your projects.
+Paste this into Claude Code. It's written for maximum reliability: it pins to a specific release tag so behavior doesn't drift when the repo updates, tells Claude exactly which tool to use, tells it to verify the file before executing, and tells it to execute verbatim rather than summarizing.
 
 ```text
-Set up Recall, adapted and optimized for my project and the way I work. The
-repo is https://github.com/cashcon57/recall. Fetch SETUP_PROMPTS.md from it
-and follow "Prompt 0 — First-time setup" exactly. Before deploying, look at
-my current project to understand what I'm building, then ask me how I want
-to scope memory across my projects: single repo, shared pool across
-multiple repos, grouped by project type, per-repo isolated, or user-global.
-Walk me through every step.
+Use WebFetch to read https://raw.githubusercontent.com/cashcon57/recall/v1.0.0/SETUP_PROMPTS.md. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
 ```
 
-That's it. If you only remember one thing from this file, remember that sentence.
+If you only remember one thing from this file, remember that.
+
+### Why is the one-liner written that way?
+
+Four small choices make the difference between "works most of the time" and "works every time":
+
+1. **Pinned to `v1.0.0`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
+2. **`raw.githubusercontent.com`, not `github.com`.** Returns raw markdown, not an HTML page. No parsing variance.
+3. **Explicit `WebFetch`.** "Fetch" is ambiguous — Claude could `curl`, clone the repo, grep, or skim. Naming the tool eliminates the branch.
+4. **"Verbatim, step by step" + integrity check.** Makes Claude execute the file instead of summarizing it. The "verify the section exists" step catches fetch failures, repo moves, or cache staleness before anything executes.
+
+Friendly fallback if you just want something human-readable:
+
+```text
+Go to https://github.com/cashcon57/recall and set it up for my project, adapted to how I work.
+```
+
+This works too (Prompt 0 is the canonical path referenced throughout the repo), it's just less deterministic.
 
 ---
 
@@ -249,7 +260,7 @@ Phase 6 — Wire Recall into my MCP client(s)
 16. Offer to delete .recall-api-key now that the key is saved in .env
     and (hopefully) my secret manager. Wait for confirmation.
 
-Phase 7 — Verify and teach Claude to use it
+Phase 7a — Connectivity check
 
 17. Tell me to restart the MCP client and run /mcp (in Claude Code) or
     the equivalent. Confirm `recall` shows as connected. For multi-instance
@@ -258,23 +269,117 @@ Phase 7 — Verify and teach Claude to use it
 18. Call recall's list_memories tool to confirm it works end to end. It
     should return "No memories stored yet" or similar.
 
-19. Store one memory as a smoke test: a one-line description of this
-    project with key "setup-complete", importance 0.3, tag "meta",
-    author whatever handle I tell you.
+Phase 7b — Functional smoke test (prove the full pipeline actually works)
 
-20. Retrieve it immediately to confirm the store/query loop works.
+This phase catches failure modes that a trivial one-memory store/retrieve
+won't: silent reranker failures, broken metadata indexes, missing security
+gates, wrong region for Workers AI, etc. Do NOT skip it. Run it from inside
+my MCP client using the `recall` tools — don't curl unless I explicitly
+say so.
 
-21. Offer to run the "teach Claude to use Recall" prompt from
+19. Store three topically distinct memories so hybrid search has real
+    ranking work to do. Use content relevant to my project (pulled from
+    Phase 0) when possible, but it's fine to use these defaults:
+
+    Memory 1:
+      key: "smoke-test-database"
+      content: "Postgres connection pools exhaust under burst load when
+        clients don't release connections back to the pool. Always use
+        transaction-scoped acquire/release, never request-scoped."
+      tags: ["database", "postgres", "performance"]
+      importance: 0.7
+      author: <my handle>
+
+    Memory 2:
+      key: "smoke-test-animation"
+      content: "React Native Reanimated worklets cannot close over JS
+        thread variables directly. Use shared values or pass primitives
+        as arguments. Otherwise you get cryptic 'not a function' errors
+        at runtime."
+      tags: ["mobile", "react-native", "gotcha"]
+      importance: 0.8
+      author: <my handle>
+
+    Memory 3:
+      key: "smoke-test-rerank"
+      content: "Cross-encoder reranking truncates memory content to
+        512 chars before scoring, cutting token usage 10 to 50x with
+        negligible accuracy loss. The final score combines reranker,
+        recency decay, and importance."
+      tags: ["architecture", "search", "performance"]
+      importance: 0.6
+      author: <my handle>
+
+    Confirm each store_memory returned success. Report the 3 keys back
+    to me.
+
+20. Test keyword (BM25) path: retrieve with query "postgres connection
+    pool". This should rank Memory 1 first — it contains those exact
+    words. If Memory 1 isn't first, FTS5 BM25 is broken. Diagnose
+    before moving on.
+
+21. Test vector (semantic) path: retrieve with query "worklet closure
+    gotcha". This is a paraphrase of Memory 2's content — the exact
+    words don't match, but the meaning does. Memory 2 should be in the
+    top 2. If it's not, the embedding or Vectorize path is broken.
+
+22. Test rerank path: retrieve with query "how does cross-encoder
+    scoring work here". Memory 3 should be #1 AND its combined score
+    should be meaningfully higher than Memory 1 or 2 for this query.
+    If all three come back with nearly-identical scores, the reranker
+    silently failed and the ranking collapsed to fusion + recency only
+    — a known degrade path. Tell me if this happens.
+
+23. Test metadata filter: retrieve with query "gotcha" and
+    min_importance=0.75. Only Memory 2 (importance 0.8) should come
+    back. If Memories 1 (0.7) or 3 (0.6) appear, the importance
+    metadata index on Vectorize isn't working.
+
+24. Test delete_memory: delete "smoke-test-rerank". Then call
+    list_memories and confirm only 2 memories remain. Then retrieve
+    with the Memory 3 query again — it should no longer appear.
+
+25. Test destructive-tool gate: call clear_memories with {"confirm": true}.
+    It MUST return an error message mentioning "ALLOW_DESTRUCTIVE_TOOLS"
+    or "disabled". If it actually wipes the store, the security gate is
+    broken and we need to roll back immediately. Report the result.
+
+26. Test auth rejection: use Bash/curl to send a request with a bogus
+    bearer token:
+      curl -s -o /dev/null -w "%{http_code}" -X POST "$WORKER_URL/mcp" \
+        -H "Authorization: Bearer wrong-key-abc123" \
+        -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+    Expected output: 401. If it's 200, auth is bypassed and we have a
+    critical problem. Stop and diagnose before anything else.
+
+27. Cleanup the smoke-test memories: delete "smoke-test-database" and
+    "smoke-test-animation". Confirm list_memories is empty again.
+
+28. Report the functional smoke test results as a table:
+    - BM25 keyword hit: pass/fail
+    - Vector semantic hit: pass/fail
+    - Rerank score variance: pass/fail
+    - Importance metadata filter: pass/fail
+    - delete_memory: pass/fail
+    - clear_memories gate: pass/fail
+    - Auth 401 on bad token: pass/fail
+    If anything failed, STOP the wizard and help me diagnose. Do not
+    advance to Phase 7c.
+
+Phase 7c — Teach Claude to use it
+
+29. Offer to run the "teach Claude to use Recall" prompt from
     SETUP_PROMPTS.md (Prompt 2) now, which adds a Memory Usage section
     to this project's CLAUDE.md. Wait for my answer.
 
-22. If I used scoping B, C, or D (multi-repo), offer to run Prompt 2
+30. If I used scoping B, C, or D (multi-repo), offer to run Prompt 2
     in each additional repo so all of them get the same CLAUDE.md
     memory-usage section.
 
 Phase 8 — Optimization report (print this last, not first)
 
-23. Print an "Optimized for your setup" summary. Use the adaptations
+31. Print an "Optimized for your setup" summary. Use the adaptations
     log you've been keeping since Phase 0. Be specific and honest —
     only list things you actually tailored to this user, not generic
     Recall features.
