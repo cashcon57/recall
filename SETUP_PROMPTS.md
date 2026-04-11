@@ -377,9 +377,193 @@ Phase 7c — Teach Claude to use it
     in each additional repo so all of them get the same CLAUDE.md
     memory-usage section.
 
+Phase 7d — Context file cleanup and optimization
+
+This phase migrates the user's existing local context files (CLAUDE.md,
+memory.md, notes.md, gotchas.md, etc.) to work WITH Recall instead of
+duplicating it. It is destructive and requires explicit consent at
+multiple gates. NEVER edit or delete any file without the user's
+explicit approval first.
+
+31. Explain why this matters to the user in plain language. Adapt the
+    phrasing based on what you find but hit these beats:
+
+    "Now that Recall is set up and working, your existing CLAUDE.md
+    and any other context files you've been using overlap with what
+    Recall can do on demand. Every time Claude turns, the full
+    contents of CLAUDE.md are pulled into context and you pay tokens
+    on all of it, even the parts that don't apply to what you're
+    currently doing. Recall is the opposite: memories only load when
+    a retrieve_memory call finds them relevant. That's the whole
+    point. If we don't clean up the local files, you'll be paying
+    twice for the same information, and worse, Claude might get
+    confused about which source is authoritative.
+
+    I'd like to do a cleanup pass. I'll find all of your context
+    files, categorize every section into KEEP / MOVE-TO-RECALL /
+    DELETE, show you the plan, and only make changes after you
+    approve. Want me to proceed?"
+
+    Wait for explicit yes/no. If no, skip to Phase 8.
+
+32. Discovery: find all context files in scope. Check:
+    - ./CLAUDE.md (project root)
+    - Any CLAUDE.md in subdirectories (monorepos often have several)
+    - ~/.claude/CLAUDE.md (user-level)
+    - Any memory.md, notes.md, gotchas.md, decisions.md, context.md,
+      architecture.md, lessons.md, or similarly named files in the
+      repo (grep for them)
+    - .cursor/rules, .github/copilot-instructions.md, AGENTS.md, or
+      any other editor-specific context files
+    - For scoping B/C: the same sweep across each wired-in repo
+
+    Report the list back as a table:
+      | File | Size | Last modified | Likely purpose |
+
+    If any file is larger than 4 KB, flag it explicitly as a
+    "token-expensive" hot path.
+
+33. Tell me WHAT IS WRONG with the current setup, specifically. Read
+    each file and give me concrete examples of problems. Don't be
+    vague. Use language like:
+
+    "Looking at your CLAUDE.md, here's what I see that's suboptimal:
+
+    Line 42–58: You have a 'Known Gotchas' section with 6 entries.
+    Every turn, Claude reads all 6 even if none apply to what I'm
+    doing. At ~600 tokens x 300 turns/day, that's 180K tokens/day
+    you're paying for context you don't need. These belong in
+    Recall so they only load when relevant.
+
+    Line 80–95: You have a bulleted list of 'Files to check' with
+    exact paths and line numbers. This is derivable from the code
+    itself via grep. Stale the moment someone refactors. Delete.
+
+    Line 15: 'The codebase uses React 19.2 with TypeScript 5.x.'
+    This is in package.json. Redundant and will go stale. Delete.
+
+    Line 110–125: 'Deploy process: run npm run deploy then ...' —
+    this is always-on workflow, should stay in CLAUDE.md.
+
+    Your gotchas.md is 12 KB of debugging war stories from the
+    last 3 months. These are great Recall material — searchable
+    when relevant, invisible otherwise. The entire file should
+    migrate."
+
+    Be specific. Quote line numbers. Estimate token cost where you
+    can. The user needs to see concretely why the current setup is
+    hurting them, not a generic lecture.
+
+34. Present the proposed plan as an explicit THREE-BUCKET table.
+    Do NOT touch any file yet. The table format:
+
+    | File | Section/Lines | Bucket | What I'll do | Why |
+    |------|---------------|--------|--------------|-----|
+    | CLAUDE.md | L42-58 Gotchas | MOVE | 6 store_memory calls | Only pay cost on retrieve |
+    | CLAUDE.md | L80-95 File paths | DELETE | Remove section | Derivable via grep |
+    | CLAUDE.md | L15 Tech stack | DELETE | Remove line | In package.json |
+    | CLAUDE.md | L110-125 Deploy | KEEP | No change | Always-on workflow |
+    | gotchas.md | Entire file | MOVE | ~15 store_memory calls + rm file | Situational, not always-on |
+    | notes.md | L1-30 TODO list | KEEP AS-IS | Not my business | Your scratchpad, not context |
+    | memory.md | L1-end | DELETE | Redundant with Recall | Superseded by this server |
+
+    For each MOVE row, also show:
+    - The proposed memory key
+    - The proposed tags
+    - The proposed importance score
+    - The proposed author handle
+    - A preview of the first ~100 chars of the content
+
+35. Ask for section-by-section approval, not a blanket yes. Go through
+    the table row by row:
+
+    "For CLAUDE.md lines 42-58 (Gotchas section), I want to create
+    6 separate memories:
+    1. 'neon-citext-migration-order' — database, migration, gotcha
+    2. 'react-native-worklet-closures' — mobile, gotcha
+    3. ...
+    Then delete those lines from CLAUDE.md. OK to proceed with
+    these 6 stores and the deletion?"
+
+    Wait for yes/no/edit PER ROW. Let me:
+    - Approve as-is
+    - Modify (change key/tags/importance/wording)
+    - Skip this row
+    - Move to a different bucket
+
+    Do NOT batch approvals. The user needs to see each change.
+
+36. Execute approved changes. Rules:
+    - Store memories FIRST, delete from files SECOND. Never delete
+      before the memory is safely stored.
+    - After each store_memory, verify the return value and confirm
+      the memory is retrievable before editing any file.
+    - Use `git diff` (if the file is tracked) or a backup copy (if
+      not) to show me exactly what's being removed before the
+      destructive step.
+    - If any store_memory fails, HALT — do not continue with the
+      delete-from-file step for that section.
+    - For DELETE buckets, show me a preview of the file before/after
+      and ask for final confirmation before writing.
+
+37. Warn about secrets. If you see anything in the source files that
+    looks like an API key, password, JWT, connection string, or
+    other credential, STOP immediately and surface it:
+
+    "I see something on line X that looks like a secret. I will
+    NOT store this in Recall — Recall isn't encrypted at rest and
+    has a shared API key. Delete this from the file manually and
+    move it to a secret manager. I'm skipping this row."
+
+38. Handle auto-memory carefully. Claude Code's built-in per-project
+    auto-memory at ~/.claude/projects/<project>/memory/ overlaps with
+    Recall but serves a different purpose (local session state, not
+    shared, not hybrid-searched). Rule: leave it alone unless the
+    user specifically asks to consolidate. If they do ask, walk them
+    through retrieving notable entries, storing the useful ones in
+    Recall via store_memory, and letting the local files age out
+    naturally. Do NOT delete ~/.claude/projects/*/memory/ files.
+
+39. After all approved changes are applied, run a verification pass:
+    - Show me the new CLAUDE.md size in bytes and estimated tokens
+      per turn
+    - Show me how many memories were created in Recall during cleanup
+    - Estimate the tokens-per-day saved at my typical usage (ask me
+      how many Claude turns I average per day if I haven't said)
+    - Run list_memories to confirm everything landed
+
+40. If I used scoping B/C/D (multi-repo), offer to run the same
+    cleanup pass on each other repo. Each one is a separate
+    Phase 7d loop, with its own discovery / plan / approval /
+    execution cycle. Do NOT batch across repos.
+
+41. Commit the cleanup changes (if the files are in a git repo) with
+    a descriptive message. Ask for approval on the commit message
+    and whether to commit now or leave it staged.
+
+    Example commit message:
+    "Migrate CLAUDE.md gotchas to Recall MCP memory
+
+    - Moved 6 gotchas sections to Recall (keys: neon-citext-*,
+      react-native-worklet-*, auth-rotation, etc.)
+    - Deleted 3 derivable/stale sections (tech stack list, file
+      paths, version numbers)
+    - Kept deploy workflow, code conventions, hard rules
+    - Shrunk CLAUDE.md from 4.2 KB to 1.1 KB (~750 tokens/turn saved
+      at ~200 turns/day = 150K tokens/day)"
+
+Rules for Phase 7d:
+- Never edit a file without showing me the change preview first.
+- Never batch approvals. Row by row.
+- Never store secrets. Halt and warn.
+- Never delete a file until its migrated memories are confirmed
+  retrievable from Recall.
+- Respect the user saying "skip" or "no" on any row.
+- If the user says no to the whole phase, skip cleanly to Phase 8.
+
 Phase 8 — Optimization report (print this last, not first)
 
-31. Print an "Optimized for your setup" summary. Use the adaptations
+42. Print an "Optimized for your setup" summary. Use the adaptations
     log you've been keeping since Phase 0. Be specific and honest —
     only list things you actually tailored to this user, not generic
     Recall features.
@@ -418,7 +602,21 @@ Phase 8 — Optimization report (print this last, not first)
     fine. Do NOT pad the list with generic Recall features that
     apply to everyone.
 
-    End the report with ONE line telling me what to do next:
+43. If Phase 7d ran, include a cleanup summary section at the
+    bottom of the report:
+
+    ### Cleanup pass results
+    - Files touched: <list>
+    - Memories migrated: <count>
+    - Sections deleted: <count>
+    - CLAUDE.md shrunk from <old size> to <new size>
+    - Estimated tokens saved per day: <number, based on my
+      confirmed turns-per-day>
+
+    Only include this section if Phase 7d actually ran and
+    made changes. Skip entirely if the user declined the cleanup.
+
+44. End the report with ONE line telling me what to do next:
     "You're all set. Start a new Claude Code session, ask me
     something about this project, and I'll retrieve any stored
     memories automatically."
