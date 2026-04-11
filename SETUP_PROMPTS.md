@@ -495,6 +495,83 @@ say so.
     If anything failed, STOP the wizard and help me diagnose. Do not
     advance to Phase 7c.
 
+Phase 7bb — Optional: periodic upstream update checks
+
+Recall ships security fixes, performance improvements, and new features
+over time. This phase installs a lightweight client-side mechanism that
+future Claude sessions use to notice when upstream has a new tag and
+offer to run the update flow. There is no server-side auto-update — the
+Recall worker deployed to the user's Cloudflare account is immutable
+until re-deployed. This is a pointer, not an automatic patch system.
+
+Ask me if I want Claude to periodically check for Recall updates.
+
+Say exactly this (adapted to the user's voice):
+
+"Want me to set up a lightweight update check? Future Claude sessions
+in this project will ping the Recall repo every 14 days or so, notice
+if a new version tag has shipped, and offer to walk you through
+updating. It costs nothing token-wise until a check actually runs.
+Default: yes. Say no if you'd rather pin your current version forever
+and never hear about it."
+
+Wait for yes/no. If no, skip to Phase 7c. If yes, do all three:
+
+(a) Append the update-check rulebook to CLAUDE.md (project root):
+
+```text
+## Recall update check (once per ~14 days)
+
+Recall is pinned to a version tag in .mcp.json and in the file
+.recall-installed-version at the project root. New versions ship
+security fixes and features. At the start of a Claude Code session,
+if more than 14 days have passed since the timestamp in
+.recall-installed-version (last-checked field), run the update check:
+
+1. WebFetch https://api.github.com/repos/cashcon57/recall/releases/latest
+   and parse the tag_name field.
+2. Compare to the pinned=... line in .recall-installed-version.
+3. If upstream is newer, tell the user:
+
+   "Recall has a new version: upstream-tag (current: pinned-tag).
+    Changelog: https://github.com/cashcon57/recall/releases/latest
+    Want me to walk you through updating? It usually means re-deploying
+    the worker with the new tag and re-running the smoke test. Most
+    updates are safe without full re-install."
+
+4. If yes: fetch the new tag's SETUP_PROMPTS.md and run Phase 5
+   (deploy), Phase 7b (smoke test), and Phase 7c (refresh the
+   CLAUDE.md rulebook in case it changed). Then update the pinned
+   field in .recall-installed-version.
+5. If no: update only the last-checked field so the check doesn't
+   fire again for 14 more days.
+
+Run this check at most once every 14 days. Never block or delay an
+in-progress task to run it — check at session start only, in the
+first idle moment.
+```
+
+(b) Create the pointer file `.recall-installed-version` at the project
+root with exactly two lines:
+
+```text
+pinned=v1.0.0
+last-checked=2026-04-11
+```
+
+Replace `v1.0.0` with whatever tag the user actually installed from,
+and the date with today's ISO date.
+
+(c) Add `.recall-installed-version` to `.gitignore`. This file is
+per-machine state, not shared config. Each teammate's timestamp is
+independent.
+
+After the three edits, tell the user: "The update check is passive.
+Future Claude sessions will ping the repo every 14 days, tell you if
+something new shipped, and let you decide whether to update. You can
+always manually force a check by telling Claude 'check for Recall
+updates'."
+
 Phase 7c — Teach Claude to use it
 
 29. Offer to run the "teach Claude to use Recall" prompt from
