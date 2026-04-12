@@ -613,7 +613,9 @@ For security issues, see [`SECURITY.md`](./SECURITY.md).
 
 ## Support Recall
 
-Recall is free and always will be. If it saves you time and you feel like buying me a coffee, you can do that at [ko-fi.com/cash508287](https://ko-fi.com/cash508287). Completely optional, zero pressure — I'm not running a business here. The server is yours, the code is MIT, the coffee is strictly a "thanks if you want to" thing.
+Recall is free and always will be. If it saves you time and you feel like buying me a coffee, you can do that below. Completely optional, zero pressure — I'm not running a business here. The server is yours, the code is MIT, the coffee is strictly a "thanks if you want to" thing.
+
+[![ko-fi](https://storage.ko-fi.com/cdn/kofi5.png?v=3)](https://ko-fi.com/cash508287)
 
 ## License
 
