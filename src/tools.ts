@@ -158,9 +158,9 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
         max_memories: {
           type: 'number',
           minimum: 1,
-          maximum: 500,
+          maximum: 300,
           description:
-            'Maximum memories to scan for similarity (default 200). Limits AI embedding calls.',
+            'Maximum memories to scan for similarity (default 200, hard cap 300). Limits AI embedding calls. Pairwise cosine comparison is O(n²) so values above 300 risk hitting Cloudflare Workers CPU time limits on cold starts.',
         },
       },
     },
@@ -311,8 +311,8 @@ function validateConsolidateInput(args: Record<string, unknown>): ConsolidateMem
     result.stale_days = args.stale_days;
   }
   if (args.max_memories !== undefined) {
-    if (typeof args.max_memories !== 'number' || args.max_memories < 1 || args.max_memories > 500 || !Number.isInteger(args.max_memories)) {
-      throw new Error('max_memories must be an integer between 1 and 500');
+    if (typeof args.max_memories !== 'number' || args.max_memories < 1 || args.max_memories > 300 || !Number.isInteger(args.max_memories)) {
+      throw new Error('max_memories must be an integer between 1 and 300 (O(n²) pairwise cosine hits CPU limits above that)');
     }
     result.max_memories = args.max_memories;
   }
@@ -322,15 +322,25 @@ function validateConsolidateInput(args: Record<string, unknown>): ConsolidateMem
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
+const EMBEDDING_DIM = 1024; // bge-m3 is 1024-dimensional
+
 async function generateEmbedding(ai: Ai, text: string): Promise<number[]> {
   const result = await ai.run('@cf/baai/bge-m3', {
     text: [text],
   });
   const embeddingData = result as unknown as { data: number[][] };
-  if (!embeddingData?.data?.[0]) {
+  const vec = embeddingData?.data?.[0];
+  if (!Array.isArray(vec)) {
     throw new Error('Embedding generation returned no data');
   }
-  return embeddingData.data[0];
+  if (vec.length !== EMBEDDING_DIM) {
+    throw new Error(
+      `Embedding generation returned unexpected dimension: got ${vec.length}, expected ${EMBEDDING_DIM}. ` +
+        `This usually means Workers AI returned a malformed response or the model changed. ` +
+        `Check wrangler tail for the underlying error.`,
+    );
+  }
+  return vec;
 }
 
 /** Query D1 FTS5 for keyword/BM25 matches. Returns keys in rank order. */
@@ -349,8 +359,11 @@ async function ftsSearch(
     ).bind(safeQuery, limit).all<{ key: string }>();
 
     return rows.results?.map((r) => r.key) ?? [];
-  } catch {
-    // FTS query can fail on certain inputs — fall back gracefully
+  } catch (err) {
+    // FTS query can fail on certain inputs (parse errors, D1 outages).
+    // We return [] so the caller's hybrid search still functions via
+    // vector-only, but the failure is logged for debuggability.
+    console.error('[fts] search failed:', err instanceof Error ? err.message : err, { query: safeQuery });
     return [];
   }
 }
@@ -494,10 +507,25 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
     }
   }
 
-  // Upsert into D1, sync FTS5, and upsert the vector in parallel.
-  // All three operations are independent — no step depends on another's output.
-  await Promise.all([
-    env.DB.prepare(
+  // Sequenced writes: D1 is the source of truth. FTS5 + Vectorize are
+  // search indexes. If the D1 write fails, we bail cleanly (nothing is
+  // written anywhere). If FTS5 fails, D1 still has the row — but the
+  // memory won't be keyword-searchable until next upsert. If Vectorize
+  // fails, D1 + FTS5 still have the row — it won't be semantically
+  // searchable until next upsert. Both cases are logged loudly so the
+  // operator notices and the weekly consolidation cron can be extended
+  // to detect orphans later.
+  //
+  // Why not parallel: a concurrent Promise.all fails atomically — if
+  // Vectorize 5xxs after D1 has already committed, the caller sees a
+  // rejected promise but the D1 row exists, which looks like a bug
+  // ("store failed") when the memory is actually half-stored. Sequencing
+  // lets us report partial success and keep the user's data discoverable
+  // via at least one search path.
+
+  // 1. D1 — source of truth. If this fails, nothing is stored anywhere.
+  try {
+    await env.DB.prepare(
       `INSERT INTO memories (id, key, content, tags, importance, author, created_at, updated_at, accessed_at, access_count)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
        ON CONFLICT (key) DO UPDATE SET
@@ -508,18 +536,35 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
          updated_at = excluded.updated_at`,
     )
       .bind(id, input.key, input.content, JSON.stringify(input.tags), input.importance, input.author, now, now, now)
-      .run(),
+      .run();
+  } catch (err) {
+    console.error('[storeMemory] D1 upsert failed:', err instanceof Error ? err.message : err, { key: input.key });
+    throw err;
+  }
 
-    // Sync FTS5 table (delete + insert since FTS5 doesn't support ON CONFLICT)
-    env.DB.batch([
+  // 2. FTS5 — cheap, happens in same D1 database. Failure warns but does
+  //    not unwind the D1 write. FTS5 will be re-synced on next upsert of
+  //    this key, or can be rebuilt from D1 by a reindex job.
+  let ftsOk = true;
+  try {
+    await env.DB.batch([
       env.DB.prepare('DELETE FROM memories_fts WHERE key = ?1').bind(input.key),
       env.DB.prepare(
         'INSERT INTO memories_fts (key, content, tags) VALUES (?1, ?2, ?3)',
       ).bind(input.key, input.content, input.tags.join(' ')),
-    ]),
+    ]);
+  } catch (err) {
+    ftsOk = false;
+    console.error('[storeMemory] FTS5 sync failed (D1 row exists):', err instanceof Error ? err.message : err, { key: input.key });
+  }
 
-    // Upsert vector (keyed by memory key for stable identity)
-    env.VECTORS.upsert([
+  // 3. Vectorize — most likely to fail (external service). Failure warns
+  //    but does not unwind D1 or FTS5. Vectorize will be re-synced on
+  //    next upsert of this key, or detected as orphan by the consolidation
+  //    cron and reindexed.
+  let vecOk = true;
+  try {
+    await env.VECTORS.upsert([
       {
         id: input.key,
         values: embedding,
@@ -530,9 +575,35 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
           author: input.author,
         },
       },
-    ]),
-  ]);
+    ]);
+  } catch (err) {
+    vecOk = false;
+    console.error('[storeMemory] Vectorize upsert failed (D1 row exists):', err instanceof Error ? err.message : err, { key: input.key });
+  }
 
+  // Return a message that honestly reflects the result. A partial store
+  // is still a store — the user's data is safe and discoverable — but
+  // the warning surface makes it clear something needs attention.
+  if (!ftsOk && !vecOk) {
+    return textResult(
+      `Stored memory "${input.key}" to D1 but BOTH search indexes failed to sync. ` +
+        `The memory is saved but not yet searchable. Retry the store to re-sync, ` +
+        `or check wrangler tail for the underlying errors.`,
+      true,
+    );
+  }
+  if (!ftsOk) {
+    return textResult(
+      `Stored memory "${input.key}" (semantic search OK, keyword search sync failed — retry store to fix).`,
+      true,
+    );
+  }
+  if (!vecOk) {
+    return textResult(
+      `Stored memory "${input.key}" (keyword search OK, semantic search sync failed — retry store to fix).`,
+      true,
+    );
+  }
   return textResult(
     `Stored memory "${input.key}" (${input.content.length} chars, ${input.tags.length} tags, importance: ${input.importance})`,
   );
@@ -726,12 +797,36 @@ async function deleteMemory(input: DeleteMemoryInput, env: Env): Promise<McpTool
     return textResult(`Memory "${input.key}" not found.`, true);
   }
 
-  // Delete from D1, FTS5, and Vectorize
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM memories WHERE key = ?1').bind(input.key),
-    env.DB.prepare('DELETE FROM memories_fts WHERE key = ?1').bind(input.key),
-  ]);
-  await env.VECTORS.deleteByIds([input.key]);
+  // Delete from D1 + FTS5 first (source of truth and keyword index).
+  // These are in the same database and atomic via batch.
+  try {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM memories WHERE key = ?1').bind(input.key),
+      env.DB.prepare('DELETE FROM memories_fts WHERE key = ?1').bind(input.key),
+    ]);
+  } catch (err) {
+    console.error('[deleteMemory] D1/FTS5 delete failed:', err instanceof Error ? err.message : err, { key: input.key });
+    throw err;
+  }
+
+  // Vectorize delete is separate and can fail independently. If it does,
+  // we still report success on the D1 side (the memory is gone from the
+  // canonical store and keyword search) but warn about the orphan vector.
+  // The weekly consolidation cron can be extended to detect and clean
+  // these up.
+  try {
+    await env.VECTORS.deleteByIds([input.key]);
+  } catch (err) {
+    console.error('[deleteMemory] Vectorize delete failed (D1 row already removed):', err instanceof Error ? err.message : err, { key: input.key });
+    return textResult(
+      `Deleted memory "${input.key}" from D1 but Vectorize delete failed. ` +
+        `The memory is gone from the canonical store and keyword search, ` +
+        `but an orphan vector remains in the semantic index. It will be ` +
+        `ignored on retrieval (no matching D1 row) and can be cleaned up ` +
+        `by a reindex job. Check wrangler tail for the underlying error.`,
+      true,
+    );
+  }
 
   return textResult(`Deleted memory "${input.key}".`);
 }
@@ -756,15 +851,37 @@ async function clearMemories(_input: ClearMemoriesInput, env: Env): Promise<McpT
     env.DB.prepare('DELETE FROM memories_fts'),
   ]);
 
+  const failedBatches: Array<{ start: number; end: number; error: string }> = [];
   if (rows.results?.length) {
     const keys = rows.results.map((r) => r.key);
     const BATCH = 100;
     for (let i = 0; i < keys.length; i += BATCH) {
-      await env.VECTORS.deleteByIds(keys.slice(i, i + BATCH));
+      const slice = keys.slice(i, i + BATCH);
+      try {
+        await env.VECTORS.deleteByIds(slice);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        failedBatches.push({ start: i, end: i + slice.length, error: message });
+        console.error('[clearMemories] Vectorize batch delete failed:', message, { start: i, count: slice.length });
+        // Keep going — deleting the remaining batches is better than
+        // bailing out and leaving more orphans.
+      }
     }
   }
 
-  return textResult(`Cleared all ${rows.results?.length ?? 0} memories.`);
+  const total = rows.results?.length ?? 0;
+  if (failedBatches.length > 0) {
+    const orphanCount = failedBatches.reduce((sum, b) => sum + (b.end - b.start), 0);
+    return textResult(
+      `Cleared ${total} memories from D1 but ${orphanCount} vectors in ${failedBatches.length} batch(es) ` +
+        `could not be deleted from Vectorize. Those orphan vectors will be ignored on retrieval ` +
+        `(no matching D1 row) and can be cleaned up by a reindex job. ` +
+        `First failure: ${failedBatches[0].error}. Check wrangler tail for details.`,
+      true,
+    );
+  }
+
+  return textResult(`Cleared all ${total} memories.`);
 }
 
 // ─── Consolidation (read-only analysis) ──────────────────────────

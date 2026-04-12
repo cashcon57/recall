@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "Self-hosted MCP memory server with hybrid semantic + keyword search, running on Cloudflare Workers",
   "license": "MIT",
-  "author": "",
+  "author": "Cash Conway",
+  "engines": {
+    "node": ">=20"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/cashcon57/recall.git"

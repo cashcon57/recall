@@ -210,14 +210,25 @@ Phase 3 — Cloudflare account
    (people sometimes have multiple). If it's the wrong one, help me switch
    with `CLOUDFLARE_ACCOUNT_ID=<correct-id> wrangler ...`.
 
-Phase 4 — Optional: connect the Cloudflare MCP server
+Phase 4 — Install Cloudflare MCP servers (strongly recommended)
 
-9. Ask me if I want to connect the Cloudflare MCP server to Claude Code
-   BEFORE we deploy. This lets you (Claude) verify resources, check for
-   naming collisions, and confirm things without me having to paste output.
-   Optional but recommended for first-time setup.
+9. Install Cloudflare's official MCP servers before we deploy. This is
+   strongly recommended because it lets you (Claude) directly verify
+   resources, check for naming collisions, read deployment logs, and
+   diagnose issues instead of parsing streaming CLI output. Without
+   these, the wizard still works — but it's blinder and slower.
 
-   If yes: edit my project's .mcp.json (or create it) to add:
+   Present it as:
+
+   "I strongly recommend installing Cloudflare's official MCP servers
+   before we deploy. They give me direct access to your Cloudflare
+   account to verify resources, read logs, and diagnose issues without
+   needing to parse wrangler output. It's five HTTP servers, one-time
+   OAuth, and they're free. Worth the two minutes. Want me to set
+   them up? (You can still skip if you'd rather — setup will work,
+   just with less visibility.)"
+
+   If yes, edit the project's .mcp.json (create if missing) and add:
 
      {
        "mcpServers": {
@@ -228,14 +239,41 @@ Phase 4 — Optional: connect the Cloudflare MCP server
          "cloudflare-docs": {
            "type": "http",
            "url": "https://docs.mcp.cloudflare.com/mcp"
+         },
+         "cloudflare-builds": {
+           "type": "http",
+           "url": "https://builds.mcp.cloudflare.com/mcp"
+         },
+         "cloudflare-observability": {
+           "type": "http",
+           "url": "https://observability.mcp.cloudflare.com/mcp"
          }
        }
      }
 
-   Tell me to restart Claude Code (or reload MCP servers with /mcp) and
-   authenticate with Cloudflare when prompted. The bindings server will
-   redirect to CF for OAuth. Wait for me to confirm both servers are
-   connected. Use them throughout the rest of this setup where helpful.
+   What each one does:
+   - bindings — list/read/modify D1 databases, Vectorize indexes,
+     R2 buckets, KV namespaces. Used throughout deploy for
+     collision detection and verification.
+   - docs — on-demand Cloudflare documentation lookups. Helpful
+     when diagnosing obscure wrangler errors.
+   - builds — deployment history, worker versions, rollback info.
+     Useful when iterating on the worker post-install.
+   - observability — log streams (equivalent to wrangler tail)
+     and metrics. This is the one that matters most long-term —
+     when something breaks in production, you'll use this to see
+     what the worker is actually doing without having to open a
+     terminal.
+
+   Tell me to restart Claude Code (or reload MCP servers with /mcp)
+   and authenticate with Cloudflare when prompted. Each server will
+   redirect to CF OAuth once; subsequent sessions reuse the token.
+   Wait for me to confirm all four servers are connected before
+   proceeding to Phase 5.
+
+   If the user declines, proceed without the Cloudflare MCPs and
+   note in the adaptations log that streaming wrangler output is
+   the only visibility channel. Do not retry the ask.
 
 Phase 5 — Deploy Recall (adapt based on scoping choice from Phase 2)
 
@@ -497,25 +535,32 @@ say so.
 
 Phase 7bb — Optional: periodic upstream update checks
 
-Recall ships security fixes, performance improvements, and new features
-over time. This phase installs a lightweight client-side mechanism that
-future Claude sessions use to notice when upstream has a new tag and
-offer to run the update flow. There is no server-side auto-update — the
-Recall worker deployed to the user's Cloudflare account is immutable
-until re-deployed. This is a pointer, not an automatic patch system.
+This phase is entirely optional. Skip it cleanly if the user says no
+and do not treat "no" as an odd or discouraged choice. Some users
+prefer to pin a version forever and never hear about upstream; that
+is a legitimate preference, not something to argue about.
 
-Ask me if I want Claude to periodically check for Recall updates.
+What this phase would install if the user says yes: a lightweight
+client-side mechanism that future Claude sessions use to check
+upstream for new version tags and offer a context-aware update flow
+(the full three-stage detect/contextualize/offer process documented
+below). It is NOT server-side auto-update. The Recall worker deployed
+to the user's Cloudflare account is immutable until re-deployed. This
+is a reminder pointer, not an automatic patch system.
 
-Say exactly this (adapted to the user's voice):
+Ask me neutrally, without a suggested default:
 
-"Want me to set up a lightweight update check? Future Claude sessions
-in this project will ping the Recall repo every 2 days or so, notice
-if a new version tag has shipped, and offer to walk you through
-updating. It costs nothing token-wise until a check actually runs.
-Default: yes. Say no if you'd rather pin your current version forever
-and never hear about it."
+"One more optional thing: do you want future Claude sessions in this
+project to check for Recall updates every couple days? Pros: you
+hear about security fixes, performance improvements, and new features
+so you can opt into them. Cons: one more thing in your CLAUDE.md,
+one more file in your project root, and a tiny WebFetch every few
+days. Totally fine to say no — you can always manually check later
+by just asking Claude 'any Recall updates?'."
 
-Wait for yes/no. If no, skip to Phase 7c. If yes, do all three:
+Wait for a clear yes or no. No default. No nudge either way. If I
+ask clarifying questions, answer them honestly. If I say no, skip
+to Phase 7c and do not bring it up again. If I say yes, do all three:
 
 (a) Append the update-check rulebook to CLAUDE.md (project root):
 

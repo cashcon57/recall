@@ -8,6 +8,8 @@
 
 **A self-hosted MCP memory server with hybrid semantic + keyword search, running on Cloudflare Workers.**
 
+> Not affiliated with Microsoft Windows Recall. This is an open-source memory server for AI coding assistants (Claude Code, Cursor, Windsurf, Cline, Claude Desktop, anything speaking MCP).
+
 Give Claude, Cursor, Windsurf, or any MCP-compatible client a persistent memory that survives across sessions, projects, and devices. No SaaS, no per-token fees, no data leaving your infrastructure. Your Cloudflare account, your data, your rules.
 
 **Who is this for?** Developers using AI coding assistants who are tired of re-explaining context every session. Teams who want a shared knowledge pool their agents can actually use. Anyone who wants memory without paying a subscription or shipping prompts to a third party.
