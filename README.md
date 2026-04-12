@@ -12,7 +12,7 @@
 
 > Not affiliated with Microsoft Windows Recall. This is an open-source memory server for AI coding assistants (Claude Code, Cursor, Windsurf, Cline, Claude Desktop, anything speaking MCP).
 
-> **Currently Cloudflare-only.** A Docker-based self-hosted path (Postgres + pgvector + local embeddings, no Cloudflare required) is planned for a future release. [PRs welcome](#contributing) if you want to help build it — see the [FAQ](#faq) for the reasoning behind the current architecture.
+> **Currently Cloudflare-only.** A Docker-based self-hosted path (Postgres + pgvector + local embeddings, no Cloudflare required) is in the works and will ship in a later release. [PRs welcome](#contributing) if you want to help get it out sooner — see the [FAQ](#faq) for the reasoning behind the current architecture.
 
 Give Claude, Cursor, Windsurf, or any MCP-compatible client a persistent memory that survives across sessions, projects, and devices. No SaaS, no per-token fees, no data leaving your infrastructure. Your Cloudflare account, your data, your rules.
 
@@ -570,7 +570,7 @@ Deliberate tradeoff. Cloudflare gives Recall four things that matter for this sp
 A Docker path means: Postgres or SQLite + pgvector, a local embedding model via ollama or llama.cpp, a Node/Bun server replacing the Workers runtime, a docker-compose stack, volume mounts, update flow, and a VPS or home server. That's a meaningfully different product — slower, costs money (VPS or your electricity), more moving parts, loses the Claude-Code one-line install — but it's the right choice for people who genuinely need local-first, airgapped, or non-Cloudflare infra.
 
 **Can I run Recall outside Cloudflare Workers today?**
-Not yet. The v1.0.0 codebase uses Cloudflare-specific bindings (D1, Vectorize, Workers AI) so porting is a rewrite, not a config flag. A Docker-based path (Postgres + pgvector + local embeddings) is planned for a future release, and PRs are welcome if you want to contribute one sooner. Track or propose the work at [github.com/cashcon57/recall/issues](https://github.com/cashcon57/recall/issues).
+Not yet. The v1.0.0 codebase uses Cloudflare-specific bindings (D1, Vectorize, Workers AI) so porting is a rewrite, not a config flag. A Docker-based path (Postgres + pgvector + local embeddings) is actively in the works and will ship in a later release — not this week, but it's not vaporware. If you want to help get it out sooner, PRs are welcome. Track or propose the work at [github.com/cashcon57/recall/issues](https://github.com/cashcon57/recall/issues).
 
 **But I'm still nervous about Cloudflare having my memories.**
 Worth saying clearly: Recall runs on YOUR Cloudflare account, not a shared service. The code is MIT, the worker is deployed under your own CF credentials, the D1 database lives in your account, the API key is yours, and the data never leaves your CF tenant. It's self-hosted in the same sense that running Postgres on AWS RDS is self-hosted — Cloudflare is the substrate, not the vendor you're sharing data with. If that's still not sufficient (auditability, compliance, or you just don't trust CF specifically), wait for the Docker path or use one of the alternatives in the [How it compares](#how-it-compares) table.
