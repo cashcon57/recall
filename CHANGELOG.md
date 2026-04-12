@@ -1,6 +1,25 @@
+<!-- markdownlint-disable MD024 -- Keep a Changelog repeats Added/Changed/Fixed/Security headings per version, which is intentional. -->
+
 # Changelog
 
 All notable changes to Recall are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.1.1] — 2026-04-12
+
+Bug fix for the #1 real-world install failure: "setup wizard ran successfully but `/mcp` doesn't show the memory server after restart." The root cause was that the wizard wrote `.mcp.json` but didn't update `~/.claude.json`'s per-project trust state, so the new Claude Code session saw the server as "not yet trusted" and silently disabled it.
+
+### Fixed
+
+- **New step 14b: pre-approve MCP servers in `~/.claude.json`.** The wizard now updates the user's Claude Code trust state (adding new server names to `projects.<path>.enabledMcpjsonServers` and removing them from `disabledMcpjsonServers`) BEFORE asking the user to restart. For scoping B/C/D/F this runs per project path; for option F it pre-approves both `recall-team` and `recall-personal`. Safety rules: only touches the enabled/disabled arrays under the specific project paths the wizard is wiring, never modifies any other field, uses proper JSON parse+modify+write (no regex or shell concatenation).
+- **Phase 7a restart instructions rewritten** to be sequential and to spell out the shell-environment gotchas that caused confusion in early installs: do not open a new terminal tab, source `.env` in the exact shell you'll launch `claude` from, verify env vars are set before launching, quit with `/quit` not `Ctrl+C`.
+- **Phase 7a step 17c: new diagnostic flow** for "memory server not visible in /mcp." Walks the user through the five actual failure causes in order: (1) trust state in `~/.claude.json` didn't stick, (2) env var not set in the launch shell, (3) `.mcp.json` missing, malformed, or in wrong directory, (4) missing `"type": "http"` field, (5) server actually down or URL wrong. Each cause has an explicit diagnostic command and fix path so the user doesn't have to guess.
+- **Trust prompt handling in Phase 7a step 17d** now assumes pre-approval succeeded and the new session loads the server automatically. Fallback guidance for the rare case where a trust prompt still appears is still included.
+
+### Notes on upgrading from 1.1.0
+
+If you installed 1.1.0 successfully and the memory server is visible in `/mcp`, you don't need to do anything — 1.1.1 only changes the install wizard, not the deployed worker code. Your existing install is fine.
+
+If you installed 1.1.0 and hit the "server invisible after restart" bug, the fastest fix is to re-run the install one-liner pinned to 1.1.1 (the wizard is idempotent and will pick up your existing deployment). Alternatively, manually edit `~/.claude.json` and add your server name(s) to `projects.<your-project-path>.enabledMcpjsonServers` and restart claude.
 
 ## [1.1.0] — 2026-04-12
 
@@ -82,5 +101,6 @@ First public release. Foundational architecture and a usable end-to-end setup wi
 
 **Note on v1.0.0 tagging history:** Between the initial v1.0.0 tag and the release of v1.1.0, the v1.0.0 tag was force-pushed several times during iterative hardening. This was a mistake — tags should be immutable. With v1.1.0, the tag discipline resets: v1.0.0 is now permanently pinned to its original commit, v1.1.0 is the new pinned default, and future versions will ship as new tags (no force-pushes). See the repository's release notes on GitHub for the canonical per-version state.
 
+[1.1.1]: https://github.com/cashcon57/recall/releases/tag/v1.1.1
 [1.1.0]: https://github.com/cashcon57/recall/releases/tag/v1.1.0
 [1.0.0]: https://github.com/cashcon57/recall/releases/tag/v1.0.0

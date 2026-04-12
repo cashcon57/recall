@@ -11,7 +11,7 @@ ChatGPT can also guide you through it, but it can't run commands or edit files, 
 Paste this into Claude Code. It's written for maximum reliability: it pins to a specific release tag so behavior doesn't drift when the repo updates, tells Claude exactly which tool to use, tells it to verify the file before executing, and tells it to execute verbatim rather than summarizing.
 
 ```text
-Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.0/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
+Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.1/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
 ```
 
 If you only remember one thing from this file, remember that.
@@ -20,7 +20,7 @@ If you only remember one thing from this file, remember that.
 
 Four small choices make the difference between "works most of the time" and "works every time":
 
-1. **Pinned to `v1.1.0`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
+1. **Pinned to `v1.1.1`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
 2. **`raw.githubusercontent.com`, not `github.com`.** Returns raw markdown, not an HTML page. No parsing variance.
 3. **Explicit `Bash (curl -fsSL)`.** "Fetch" is ambiguous — Claude could use WebFetch (which summarizes), clone the repo, or skim. Naming the exact tool eliminates the branch and, critically, avoids WebFetch's auto-summarization — `curl` returns raw markdown byte-for-byte, which is what the wizard needs to execute verbatim.
 4. **"Verbatim, step by step" + integrity check.** Makes Claude execute the file instead of summarizing it. The "verify the section exists" step catches fetch failures, repo moves, or cache staleness before anything executes.
@@ -405,6 +405,96 @@ Phase 6 — Wire Recall into my MCP client(s)
       update the `recall-personal` URL to point at their own worker
       when they set up on their machine. Mention this explicitly.
 
+14b. Pre-approve the new MCP server(s) in the user's Claude Code
+     trust state, so the new session doesn't need to show a trust
+     prompt. This is CRITICAL — without this step, the new session
+     may see the server as "not yet trusted" and silently disable
+     it, leaving the user with a wizard that appears successful
+     but an /mcp output that doesn't show recall.
+
+     Claude Code stores per-project MCP trust state in
+     ~/.claude.json (the user-level config file, NOT the project's
+     .mcp.json). The relevant structure:
+
+       {
+         "projects": {
+           "<absolute-project-path>": {
+             "enabledMcpjsonServers": [...],
+             "disabledMcpjsonServers": [...]
+           }
+         }
+       }
+
+     Do this:
+
+     a. Read ~/.claude.json. If the file doesn't exist, skip this
+        step entirely — it means Claude Code has never been launched
+        here and the first launch will create it fresh with the
+        server(s) in a pending state. Tell the user they'll see a
+        trust prompt on first launch and to approve it.
+
+     b. Locate the absolute path of the project we're wiring Recall
+        into (for scoping A/B/C/D/F, this is the repo path; for
+        scoping E with a user-global server, this step does not
+        apply — skip it).
+
+     c. If projects.<path> exists: read its enabledMcpjsonServers
+        and disabledMcpjsonServers arrays. For each server name
+        you just added to .mcp.json (e.g. "recall", or
+        "recall-team" + "recall-personal" for option F):
+
+          - Remove it from disabledMcpjsonServers if present
+            (this handles the case where the user previously
+            denied a trust prompt for a server with the same name)
+          - Add it to enabledMcpjsonServers if not already present
+
+        Write the modified ~/.claude.json back. Preserve all other
+        fields in the file exactly — do NOT use a regex or shell
+        cat+echo pattern, use a proper JSON parse+modify+write
+        flow (node -e, python3 json module, or jq).
+
+     d. If projects.<path> does NOT exist yet in ~/.claude.json:
+        add it with:
+          {
+            "enabledMcpjsonServers": [<your server names>],
+            "disabledMcpjsonServers": [],
+            "hasTrustDialogAccepted": true
+          }
+        Then write the file back.
+
+     e. Verify the write succeeded by re-reading ~/.claude.json
+        and confirming the server names are now in
+        enabledMcpjsonServers under the correct project path.
+
+     f. Tell the user what you just did in one sentence:
+        "Pre-approved the new MCP server(s) in your Claude Code
+        trust state so the new session loads them automatically
+        without a trust prompt."
+
+     For scoping B (shared pool across multiple repos): run steps
+     a-e for EACH of the repo paths the user wired in. Each
+     project path needs its own trust entry in ~/.claude.json.
+
+     For scoping F (team + per-user personal pools): add BOTH
+     "recall-team" AND "recall-personal" to enabledMcpjsonServers.
+
+     For scoping E (user-global via ~/.claude.json top-level
+     mcpServers): this is already user-scoped, no per-project
+     trust entry needed. Skip the pre-approval step entirely.
+
+     SAFETY RULES:
+     - Do NOT touch any field in ~/.claude.json other than the
+       specific enabledMcpjsonServers and disabledMcpjsonServers
+       arrays under the project path(s) you're wiring. That file
+       holds a lot of other state (user preferences, session
+       history, etc.) and clobbering any of it is a catastrophic
+       UX failure.
+     - Do NOT remove servers from enabledMcpjsonServers that
+       you didn't add. Only manage the ones from this install.
+     - If the file has unusual structure or content you don't
+       recognize, STOP and tell the user what you found rather
+       than writing speculatively.
+
 15. Create a local .env file with all required keys:
 
     For scopings A, B, C, D, E:
@@ -551,33 +641,192 @@ since Phase 0.
 
 Phase 7a — Connectivity check
 
-17. Tell me to restart the MCP client. For Claude Code: quit with
-    /quit or Cmd+Q, then re-launch `claude` in the project directory
-    AFTER sourcing the .env file (`source .env` or equivalent). For
-    Claude Desktop: fully quit and re-launch. For Cursor/Windsurf:
-    restart the editor. The restart is required so the new .mcp.json
-    is loaded and the env vars resolve inside the MCP client.
+17. Tell me to restart the MCP client. The restart is required so the
+    new .mcp.json is loaded and the env vars resolve inside the MCP
+    client. Give me these exact instructions, in this exact order,
+    because the steps matter and the order matters:
 
-    IMPORTANT: This is where the current Claude session ends. I cannot
-    continue the wizard in a new session without the resume prompt from
-    step 16b. The new session starts empty.
+    For Claude Code:
 
-    Tell the user to paste the resume prompt from step 16b as their
-    first message in the new session. Then the new Claude will pick
-    up from step 17a below.
+      a. Quit the current session completely: run /quit, or press
+         Cmd+D (macOS) / Ctrl+D (Linux), or close the terminal.
+         Do NOT just hit Cmd+C — that can leave a detached claude
+         process alive which will confuse the restart.
 
-17a. (Runs in the new Claude Code session, after the user pastes the
-     resume prompt.) Acknowledge the resume prompt, read back the
-     state as a 3-line summary ("Here's what I see: you chose
+      b. In the SAME terminal window (same shell instance): source
+         the .env file so the env vars are in this process's
+         environment:
+           source .env        # or: source ~/.env if it's at home
+         Verify it worked by running:
+           echo "RECALL_API_KEY is ${RECALL_API_KEY:+set}${RECALL_API_KEY:-EMPTY}"
+         You should see "set". If you see "EMPTY", the source
+         command didn't work — check the .env path. For option F,
+         also verify RECALL_TEAM_KEY and RECALL_PERSONAL_KEY.
+
+         CRITICAL: do not open a new terminal tab or window to
+         launch claude. Env vars do not propagate across shells.
+         You must source .env in the exact shell you launch claude
+         from.
+
+      c. From the SAME shell, cd into the project directory and
+         launch claude:
+           cd <project-path>
+           claude
+
+      d. The new MCP server(s) should load automatically because
+         step 14b pre-approved them in your ~/.claude.json trust
+         state. You shouldn't see a trust prompt.
+
+         If you DO see a trust prompt (e.g. because the pre-approval
+         step failed, or your Claude Code version handles trust
+         differently), approve it. Look for text like:
+           "This project includes MCP server(s) defined in .mcp.json:
+            - recall (http)
+            Do you want to allow these servers?"
+         Approve it. If you don't see the prompt but the server
+         also isn't in /mcp, run /mcp right away — it will show
+         you pending MCP servers that need approval.
+
+    For Claude Desktop:
+
+      a. Fully quit the app (Cmd+Q on macOS, or right-click the
+         taskbar icon → Quit on Windows). Don't just close the
+         window.
+      b. Re-launch Claude Desktop. It reads its config file on
+         launch, no env var gymnastics needed.
+      c. Claude Desktop will prompt to trust new MCP servers on
+         first use. Approve them.
+
+    For Cursor / Windsurf / Cline:
+
+      a. Restart the editor (fully quit + re-launch).
+      b. Ensure env vars are set at the user level (in your
+         ~/.zshrc or ~/.bashrc) — these editors usually inherit
+         from the shell that launched them, which for GUI apps
+         is the login shell, not an interactive one. If the env
+         vars aren't in your profile, the substitution will fail
+         silently.
+      c. Approve any trust prompts when prompted.
+
+    IMPORTANT: This is where the current Claude session ends. The
+    new session starts empty and cannot continue the wizard without
+    the resume prompt from step 16b. Tell the user to paste it as
+    their first message in the new session.
+
+17a. (Runs in the NEW Claude Code session, after the user pastes
+     the resume prompt.) Acknowledge the resume prompt, read back
+     the state as a 3-line summary ("Here's what I see: you chose
      scoping option X, deployed workers A and B, and are ready for
      Phase 7a connectivity check"), and ask the user to confirm it
-     matches what they remember from the previous session before
-     proceeding. This catches any copy-paste truncation.
+     matches what they remember from the previous session. This
+     catches copy-paste truncation.
 
-17b. Run /mcp (in Claude Code) or the equivalent. Confirm `recall`
-     shows as connected. For multi-instance setups (C, D, F),
-     verify each one separately — in option F, both `recall-team`
-     and `recall-personal` must show as connected.
+17b. Run /mcp (in Claude Code) or the equivalent. Check whether
+     `recall` shows as connected. For multi-instance setups
+     (C, D, F), check each one separately — in option F, both
+     `recall-team` and `recall-personal` must show as connected.
+
+     If everything is connected: great, proceed to step 18.
+     If anything is missing or not connected: go to step 17c.
+
+17c. DIAGNOSTIC FLOW — the memory server isn't visible in /mcp.
+     This is the #1 failure point in the wizard and it's usually
+     one of five specific causes. Diagnose them in this order, one
+     at a time, until you find the problem. Do NOT jump to the
+     next step until the current one is confirmed.
+
+     Cause 1: Trust state in ~/.claude.json didn't stick.
+       Step 14b should have pre-approved the server by adding
+       it to enabledMcpjsonServers under the project path in
+       ~/.claude.json. If that step was skipped, failed, or the
+       user previously denied the same server name in a prior
+       install attempt (and it ended up in disabledMcpjsonServers),
+       the new session won't load it.
+
+       Check: read ~/.claude.json, find the projects.<path> entry
+       for the current project. Report back what's in
+       enabledMcpjsonServers and disabledMcpjsonServers for that
+       project. If `recall` (or the option F names) is in
+       disabledMcpjsonServers, that's the problem. Fix: re-run
+       step 14b's logic — remove from disabled, add to enabled,
+       write the file back, restart claude.
+
+       If `recall` isn't in either list and also isn't visible
+       in /mcp, that means Claude Code didn't even detect the
+       .mcp.json entry on startup. Proceed to Cause 3.
+
+     Cause 2: Env var not set in the current shell.
+       If the user sourced .env in a different terminal than the
+       one they launched claude from, the ${RECALL_API_KEY}
+       substitution in .mcp.json failed. Claude Code tries to
+       connect with a literal "${RECALL_API_KEY}" as the bearer
+       token, the server returns 401, and the client drops the
+       connection.
+
+       Check: ask the user to run this in the terminal they
+       launched claude from (NOT a fresh terminal):
+         echo "${RECALL_API_KEY:+set}${RECALL_API_KEY:-EMPTY}"
+       If it says EMPTY, this is the cause. Fix: quit claude,
+       source .env in this shell, relaunch.
+
+       For option F: also check RECALL_TEAM_KEY and
+       RECALL_PERSONAL_KEY. Both must be set.
+
+     Cause 3: .mcp.json in wrong location or malformed.
+       The wizard writes to the project root. If the user
+       launched claude from a different directory, it won't find
+       the file. If an earlier edit broke the JSON, Claude Code
+       silently skips it.
+
+       Check: ask the user to run:
+         cat .mcp.json | python3 -m json.tool > /dev/null && echo OK || echo BROKEN
+       (Or use node -e "JSON.parse(require('fs').readFileSync('.mcp.json'))" if python3 is unavailable.)
+
+       If BROKEN: ask them to paste the output of cat .mcp.json.
+       You'll see the parse error. Fix it. Usually a missing
+       comma, a stray trailing comma, or an unescaped quote in
+       the URL.
+
+       If the file doesn't exist in the current directory: the
+       user launched claude from the wrong place. Tell them to
+       cd into the project root (where the setup wizard wrote
+       the file) and re-launch claude from there.
+
+     Cause 4: Missing `type: "http"` field.
+       HTTP-transport MCP servers in .mcp.json need an explicit
+       type field. Without it, Claude Code may default to stdio
+       and fail silently trying to spawn a process.
+
+       Check: ask the user to show the `recall` entry from
+       .mcp.json. Look for `"type": "http"`. If missing, add it.
+
+     Cause 5: The server is actually down or the URL is wrong.
+       Rare, but possible if the deployed worker URL got
+       captured wrong in step 11 or if the worker was manually
+       deleted.
+
+       Check: ask the user to run (in Bash, not WebFetch):
+         curl -s -o /dev/null -w "%{http_code}\n" \
+           -X POST "$RECALL_URL/mcp" \
+           -H "Authorization: Bearer $RECALL_API_KEY" \
+           -H "Content-Type: application/json" \
+           -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+       Where $RECALL_URL is the worker URL from the resume
+       prompt and $RECALL_API_KEY is from the current shell.
+       Expected: 200. If you see 401, the auth/env var is
+       wrong (back to cause 2). If 404, the URL is wrong. If
+       no response, the worker is down — check
+       `npx wrangler tail` or the Cloudflare dashboard.
+
+     After fixing whichever cause applied: ask the user to quit
+     claude (/quit), verify the env vars are still set in that
+     shell, and re-launch. Then go back to step 17b.
+
+     If you try all five causes and /mcp still doesn't show
+     recall, STOP. Tell the user to report the issue at
+     https://github.com/cashcon57/recall/issues with the
+     output of: `cat .mcp.json`, `echo $RECALL_API_KEY | wc -c`,
+     `/mcp` output, and which MCP client they're using.
 
 18. Call recall's list_memories tool to confirm it works end to end. It
     should return "No memories stored yet" or similar.
@@ -772,7 +1021,7 @@ Before saying anything to the user, do this homework:
 
    Example of a good contextualized prompt:
 
-   "Recall v1.1.0 shipped. Here's what changed and whether it
+   "Recall v1.1.1 shipped. Here's what changed and whether it
    matters for you:
 
    - Security: hashed rate-limit bucket now uses SHA-512 instead
@@ -798,7 +1047,7 @@ Before saying anything to the user, do this homework:
 
    Example of a BAD prompt (do not do this):
 
-   "A new version of Recall is available: v1.1.0. Want to update?"
+   "A new version of Recall is available: v1.1.1. Want to update?"
 
    (That's what v1.0.0 did and it's useless. Always contextualize.)
 
