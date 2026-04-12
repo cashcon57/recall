@@ -4,6 +4,32 @@
 
 All notable changes to Recall are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] — 2026-04-12
+
+Three bug fixes discovered while running the v1.1.1 wizard end-to-end against a fresh project (the AgentBoard repo). All three would have hit real users; two were silently destructive.
+
+### Fixed
+
+- **`setup.sh` account log was misleading for users with multiple Cloudflare accounts.** The script used `wrangler whoami | grep -Eo '[a-f0-9]{32}' | head -1` to determine the target account, which always returned the first account in the whoami table regardless of which account wrangler would actually use for the deploy. Users with a personal + business account on the same token would see a log line saying "deploying to account A" while the deploy actually went to account B — or worse, the log would correctly say account A, then a re-run without `$CLOUDFLARE_ACCOUNT_ID` set would silently deploy to a different account. Fix: the script now reads `$CLOUDFLARE_ACCOUNT_ID` first (matching wrangler's own resolution order), falls back to parsing whoami for a single-account token, and **fails fast with explicit instructions** if the token has multiple accounts — refusing to guess which one the user wants. The error message prints the available accounts and tells the user to re-run with `CLOUDFLARE_ACCOUNT_ID=<id> ./setup.sh`.
+
+- **Wizard would clobber existing `.env` files.** Phase 6 step 15 said "Create a local .env file" and a naive implementation would overwrite whatever was already there. Real projects almost always have an existing .env with framework config (VITE_API_PORT, EXPO_PUBLIC_*, NEXT_PUBLIC_*, database URLs, etc.). Any user running the wizard on an existing project would lose that content, and since .env is gitignored, there would be no git history to recover from. Fix: step 15 is now APPEND-ONLY with explicit rules — read the existing file first, check whether the Recall key is already set, stop and ask the user if the key is present with a different value, append cleanly with a comment header if missing, and never replace existing content. The step now explicitly explains WHY in the wizard instructions so future rewrites don't reintroduce the bug.
+
+- **`wrangler deploy` emitted `workers_dev` and `preview_urls` warnings on every fresh deploy.** Cosmetic but noisy, and confusing for first-time users who would read the warnings and wonder if something was wrong. Fix: added both fields to `wrangler.toml.example` with explicit defaults (`workers_dev = true`, `preview_urls = false`) so new deploys are silent. The defaults match the intended behavior (deploy to the free workers.dev subdomain, skip preview URLs since Recall is meant to be bound to a stable URL).
+
+### Notes on how these bugs were discovered
+
+I ran the v1.1.1 wizard end-to-end against a real public repo (AgentBoard) to validate the install flow before releasing v1.1.1. Bug 1 almost caused me to deploy to the wrong Cloudflare account (the log said "Admin@switchrdating.com's Account" but the deploy actually went to the intended personal account — I had to check the Cloudflare dashboard to verify). Bug 2 did happen: I overwrote AgentBoard's existing `VITE_API_PORT=3000` .env file before catching it via the 19-byte size difference. Bug 3 was just warning spam in the setup.sh output.
+
+The AgentBoard install is complete and working after the v1.1.2 fixes. The deployed worker `recall-agentboard` on the personal Cloudflare account responds correctly to `tools/list` with all 6 tools.
+
+### Upgrading from v1.1.1
+
+If your v1.1.1 install is working, you don't need to upgrade — v1.1.2 only changes `setup.sh` and the wizard prompt, not the deployed worker code. Your existing install is fine.
+
+If you haven't run the install yet, use the v1.1.2 pinned URL in the install one-liner. All three fixes above will apply automatically.
+
+If you have multiple Cloudflare accounts on your wrangler token and plan to run setup.sh: pass `CLOUDFLARE_ACCOUNT_ID=<account-id>` explicitly. The new setup.sh will fail fast and tell you to do this anyway if the token has more than one account.
+
 ## [1.1.1] — 2026-04-12
 
 Bug fix for the #1 real-world install failure: "setup wizard ran successfully but `/mcp` doesn't show the memory server after restart." The root cause was that the wizard wrote `.mcp.json` but didn't update `~/.claude.json`'s per-project trust state, so the new Claude Code session saw the server as "not yet trusted" and silently disabled it.
@@ -101,6 +127,7 @@ First public release. Foundational architecture and a usable end-to-end setup wi
 
 **Note on v1.0.0 tagging history:** Between the initial v1.0.0 tag and the release of v1.1.0, the v1.0.0 tag was force-pushed several times during iterative hardening. This was a mistake — tags should be immutable. With v1.1.0, the tag discipline resets: v1.0.0 is now permanently pinned to its original commit, v1.1.0 is the new pinned default, and future versions will ship as new tags (no force-pushes). See the repository's release notes on GitHub for the canonical per-version state.
 
+[1.1.2]: https://github.com/cashcon57/recall/releases/tag/v1.1.2
 [1.1.1]: https://github.com/cashcon57/recall/releases/tag/v1.1.1
 [1.1.0]: https://github.com/cashcon57/recall/releases/tag/v1.1.0
 [1.0.0]: https://github.com/cashcon57/recall/releases/tag/v1.0.0

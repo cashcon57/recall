@@ -11,6 +11,18 @@ name = "recall"
 main = "src/index.ts"
 compatibility_date = "2025-03-01"
 
+# Deploy to workers.dev by default. Users who want a custom domain
+# can override this with routes (see Custom Domain section in the
+# README).
+workers_dev = true
+
+# Disable preview URLs. The worker is intended to be bound to your
+# MCP client by a single stable URL — preview URLs (pr/branch-specific
+# deploy previews) would just create churn and potentially leak
+# unprotected endpoints. If you need preview URLs for iteration,
+# set this to true and run the setup.sh deploy on a non-production env.
+preview_urls = false
+
 # ── D1 (SQLite) — stores memory metadata, content, and FTS5 index ──
 [[d1_databases]]
 binding = "DB"

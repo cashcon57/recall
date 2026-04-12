@@ -11,7 +11,7 @@ ChatGPT can also guide you through it, but it can't run commands or edit files, 
 Paste this into Claude Code. It's written for maximum reliability: it pins to a specific release tag so behavior doesn't drift when the repo updates, tells Claude exactly which tool to use, tells it to verify the file before executing, and tells it to execute verbatim rather than summarizing.
 
 ```text
-Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.1/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
+Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.2/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
 ```
 
 If you only remember one thing from this file, remember that.
@@ -20,7 +20,7 @@ If you only remember one thing from this file, remember that.
 
 Four small choices make the difference between "works most of the time" and "works every time":
 
-1. **Pinned to `v1.1.1`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
+1. **Pinned to `v1.1.2`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
 2. **`raw.githubusercontent.com`, not `github.com`.** Returns raw markdown, not an HTML page. No parsing variance.
 3. **Explicit `Bash (curl -fsSL)`.** "Fetch" is ambiguous — Claude could use WebFetch (which summarizes), clone the repo, or skim. Naming the exact tool eliminates the branch and, critically, avoids WebFetch's auto-summarization — `curl` returns raw markdown byte-for-byte, which is what the wizard needs to execute verbatim.
 4. **"Verbatim, step by step" + integrity check.** Makes Claude execute the file instead of summarizing it. The "verify the section exists" step catches fetch failures, repo moves, or cache staleness before anything executes.
@@ -495,23 +495,63 @@ Phase 6 — Wire Recall into my MCP client(s)
        recognize, STOP and tell the user what you found rather
        than writing speculatively.
 
-15. Create a local .env file with all required keys:
+15. Add the Recall API key(s) to a local .env file. This step is
+    APPEND-ONLY — if the project already has a .env file with other
+    content, DO NOT overwrite or replace it. Preserve every existing
+    line and only add what's missing.
 
-    For scopings A, B, C, D, E:
-      RECALL_API_KEY=<the key>
-      (For C, use distinct var names like RECALL_API_KEY_WORK,
-      RECALL_API_KEY_PERSONAL per group.)
+    CRITICAL rules, in order:
 
-    For scoping F:
-      RECALL_TEAM_KEY=<team key, shared with teammates>
-      RECALL_PERSONAL_KEY=<my personal key, NEVER shared>
+    a. Check if .env already exists at the project root. It probably
+       does — most projects have a .env for framework-specific config
+       (VITE_, EXPO_PUBLIC_, NEXT_PUBLIC_, etc.). If it exists:
+         - Read the current content verbatim
+         - Check whether RECALL_API_KEY (or the scoping-specific
+           variable names below) is already set
+         - If already set with the correct value: leave it alone
+           and skip to step 15d
+         - If already set with a DIFFERENT value: STOP and tell the
+           user which key is there, ask whether to overwrite, rotate,
+           or abort. Do not silently replace.
+         - If not set: APPEND the new line(s) to the end of the file,
+           preserving every existing line exactly. Use a blank line
+           and a comment header to visually separate the Recall
+           section from the existing content.
 
-    Make sure each .env is chmod 600 and in .gitignore. Tell me how
-    to source it before launching the client. For option F,
-    explicitly warn me: "Never share RECALL_PERSONAL_KEY with
-    anyone — it's the only thing giving you true privacy on this
-    setup. If you leak it, rotate immediately with
-    `wrangler secret put MEMORY_API_KEY --name recall-<project>-<my-handle>`."
+    b. If .env does not exist, create it from scratch.
+
+    c. The lines to add (vary by scoping choice):
+
+       For scopings A, B, C, D, E:
+         # Recall MCP memory server
+         RECALL_API_KEY=<the key>
+         (For scoping C, use distinct var names like RECALL_API_KEY_WORK,
+         RECALL_API_KEY_PERSONAL per group.)
+
+       For scoping F (team + per-user personal pools):
+         # Recall MCP memory server — team + personal pools
+         RECALL_TEAM_KEY=<team key, shared with teammates>
+         RECALL_PERSONAL_KEY=<my personal key, NEVER shared>
+
+    d. After writing, chmod the file to 600 (owner read/write only).
+       Verify .env is in .gitignore. If it isn't, add it (most
+       projects already have it, but some Rust/Go/misc projects
+       don't).
+
+    e. Tell me how to source the .env before launching the client
+       (`source .env` from the project root, before running `claude`).
+       For option F, explicitly warn me: "Never share
+       RECALL_PERSONAL_KEY with anyone — it's the only thing giving
+       you true privacy on this setup. If you leak it, rotate
+       immediately with `wrangler secret put MEMORY_API_KEY --name
+       recall-<project>-<my-handle>`."
+
+    WHY this matters: an earlier version of this wizard just said
+    "Create a local .env file" and a naive implementation would
+    overwrite the existing file. Users whose projects had
+    VITE_API_PORT, database URLs, framework config, or other
+    secrets in .env would lose all of that content. Never overwrite.
+    Always read-check-append.
 
 16. Offer to delete .recall-api-key now that the key is saved in .env
     and (hopefully) my secret manager. Wait for confirmation.
@@ -1021,7 +1061,7 @@ Before saying anything to the user, do this homework:
 
    Example of a good contextualized prompt:
 
-   "Recall v1.1.1 shipped. Here's what changed and whether it
+   "Recall v1.1.2 shipped. Here's what changed and whether it
    matters for you:
 
    - Security: hashed rate-limit bucket now uses SHA-512 instead
@@ -1047,7 +1087,7 @@ Before saying anything to the user, do this homework:
 
    Example of a BAD prompt (do not do this):
 
-   "A new version of Recall is available: v1.1.1. Want to update?"
+   "A new version of Recall is available: v1.1.2. Want to update?"
 
    (That's what v1.0.0 did and it's useless. Always contextualize.)
 

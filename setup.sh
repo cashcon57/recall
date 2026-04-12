@@ -39,8 +39,50 @@ if ! npx wrangler whoami >/dev/null 2>&1; then
   npx wrangler login
 fi
 
-ACCOUNT="$(npx wrangler whoami 2>/dev/null | grep -Eo '[a-f0-9]{32}' | head -1 || true)"
-ok "Cloudflare account: ${ACCOUNT:-<unknown>}"
+# Determine which Cloudflare account this deploy targets.
+# Order of precedence (matches wrangler's own resolution order):
+#   1. $CLOUDFLARE_ACCOUNT_ID env var (if set)
+#   2. Single account on the token (if only one)
+#   3. Bail out and tell the user to choose (if multiple accounts)
+#
+# This fixes a bug in earlier versions where the log line just grabbed
+# the first 32-hex ID from `wrangler whoami` output, which was always
+# the top of the table regardless of which account wrangler would
+# actually use for the deploy. Users with multiple accounts on the
+# same token (very common for people who have a personal account and
+# a business account) would see a log line saying "deploying to account
+# A" while wrangler actually deployed to account B, or — worse — see
+# the log say "account A" and correctly deploy to A, but then re-run
+# setup.sh later without CLOUDFLARE_ACCOUNT_ID set and suddenly land
+# on a different account.
+if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  ACCOUNT="$CLOUDFLARE_ACCOUNT_ID"
+  ok "Cloudflare account: $ACCOUNT (from CLOUDFLARE_ACCOUNT_ID env var)"
+else
+  # Parse `wrangler whoami` output for account IDs.
+  WHOAMI_OUTPUT="$(npx wrangler whoami 2>/dev/null || true)"
+  ACCOUNT_IDS="$(echo "$WHOAMI_OUTPUT" | grep -Eo '[a-f0-9]{32}' || true)"
+  ACCOUNT_COUNT="$(echo "$ACCOUNT_IDS" | grep -cv '^$' || true)"
+
+  if [ "$ACCOUNT_COUNT" -eq 0 ]; then
+    fail "Could not determine Cloudflare account. Check \`npx wrangler whoami\` output manually."
+  elif [ "$ACCOUNT_COUNT" -eq 1 ]; then
+    ACCOUNT="$(echo "$ACCOUNT_IDS" | head -1)"
+    ok "Cloudflare account: $ACCOUNT"
+  else
+    # Multiple accounts on this token. wrangler will prompt
+    # interactively if run in a TTY, or silently default to the first
+    # account if run non-interactively. Neither is safe for a setup
+    # script that provisions real resources. Fail fast and tell the
+    # user to re-run with CLOUDFLARE_ACCOUNT_ID set.
+    warn "Multiple Cloudflare accounts detected on this token:"
+    echo "$WHOAMI_OUTPUT" | grep -E '(Account Name|[a-f0-9]{32})' | sed 's/^/   /'
+    echo
+    fail "Re-run with the account you want explicitly:
+  CLOUDFLARE_ACCOUNT_ID=<account-id> ./setup.sh
+You can copy the 32-char account ID from the table above."
+  fi
+fi
 
 # ── wrangler.toml ────────────────────────────────────────────────────
 
