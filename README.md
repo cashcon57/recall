@@ -5,6 +5,7 @@
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com)
 [![MCP](https://img.shields.io/badge/MCP-2025--03--26-000000)](https://modelcontextprotocol.io)
 [![Deploy](https://img.shields.io/badge/Deploy-1%20command-brightgreen)](#quickstart-5-minutes)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/cash508287)
 
 **A self-hosted MCP memory server with hybrid semantic + keyword search, running on Cloudflare Workers.**
 
@@ -609,6 +610,10 @@ PRs welcome. Keep scope tight: this is infrastructure, not a framework. Changes 
 File issues for bugs, feature discussions, or architectural questions.
 
 For security issues, see [`SECURITY.md`](./SECURITY.md).
+
+## Support Recall
+
+Recall is free and always will be. If it saves you time and you feel like buying me a coffee, you can do that at [ko-fi.com/cash508287](https://ko-fi.com/cash508287). Completely optional, zero pressure — I'm not running a business here. The server is yours, the code is MIT, the coffee is strictly a "thanks if you want to" thing.
 
 ## License
 
