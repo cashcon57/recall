@@ -11,7 +11,7 @@ ChatGPT can also guide you through it, but it can't run commands or edit files, 
 Paste this into Claude Code. It's written for maximum reliability: it pins to a specific release tag so behavior doesn't drift when the repo updates, tells Claude exactly which tool to use, tells it to verify the file before executing, and tells it to execute verbatim rather than summarizing.
 
 ```text
-Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.2/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
+Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.3/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
 ```
 
 If you only remember one thing from this file, remember that.
@@ -20,7 +20,7 @@ If you only remember one thing from this file, remember that.
 
 Four small choices make the difference between "works most of the time" and "works every time":
 
-1. **Pinned to `v1.1.2`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
+1. **Pinned to `v1.1.3`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
 2. **`raw.githubusercontent.com`, not `github.com`.** Returns raw markdown, not an HTML page. No parsing variance.
 3. **Explicit `Bash (curl -fsSL)`.** "Fetch" is ambiguous — Claude could use WebFetch (which summarizes), clone the repo, or skim. Naming the exact tool eliminates the branch and, critically, avoids WebFetch's auto-summarization — `curl` returns raw markdown byte-for-byte, which is what the wizard needs to execute verbatim.
 4. **"Verbatim, step by step" + integrity check.** Makes Claude execute the file instead of summarizing it. The "verify the section exists" step catches fetch failures, repo moves, or cache staleness before anything executes.
@@ -354,39 +354,74 @@ Phase 6 — Wire Recall into my MCP client(s)
     - Claude Desktop (via mcp-remote bridge)
     - Cursor / Windsurf / Cline / other
     Based on my answer AND the scoping choice from Phase 2, edit the
-    correct config file(s). Use env var substitution ${RECALL_API_KEY}
-    (or distinct var names for grouped/team modes) so keys are never
-    hardcoded or committed.
+    correct config file(s).
+
+    IMPORTANT: Hardcode the actual worker URL and API key directly
+    in the .mcp.json file. Do NOT use ${VAR} env-var substitution.
+
+    Why: Claude Code's MCP client reads .mcp.json on startup and
+    does simple string substitution for ${VAR} references. But if
+    the env var isn't in the shell that launched Claude Code (which
+    is the default state — the user would need to `source .env`
+    before every launch), the substitution resolves to an empty
+    string, the bearer token is blank, the worker returns 401, and
+    the MCP panel shows "Failed." Every other MCP server either
+    uses OAuth (browser flow, token cached automatically) or stdio
+    (no auth at all) and "just works" on restart. Recall is HTTP
+    with a static bearer token, so the token must be in the file
+    for it to work like every other server.
+
+    Since .mcp.json now contains a real secret, it MUST be
+    gitignored. Check whether .mcp.json is already in .gitignore.
+    If not, add it. Then verify with `git check-ignore .mcp.json`.
+    If the file was previously committed (e.g., from an earlier
+    install attempt that used ${VAR} substitution), run
+    `git rm --cached .mcp.json` to untrack it before proceeding.
 
     Scoping-specific wiring:
     - A: edit ./.mcp.json in this one repo with ONE server entry
-      pointing at recall-<project>
     - B: edit ./.mcp.json in every repo path I gave you in step 4,
       ONE server entry each, all pointing at the same worker
-    - C: edit ./.mcp.json in each repo with ONE server entry, pointing
-      at that group's worker
-    - D: edit ./.mcp.json in each repo with ONE server entry, pointing
-      at its own worker
+    - C: edit ./.mcp.json in each repo with ONE server entry
+    - D: edit ./.mcp.json in each repo with ONE server entry
     - E: edit ~/.claude.json (user scope) with ONE server entry so
-      Recall follows me everywhere
+      Recall follows me everywhere. Note: ~/.claude.json is never
+      committed to any repo so the hardcoded key is safe here.
 
-    - F: edit ./.mcp.json with TWO server entries. Both point at
-      Recall but go to different workers:
+    For all of A through E, the entry looks like:
+
+      {
+        "mcpServers": {
+          "recall": {
+            "type": "http",
+            "url": "https://<actual-worker-url>.workers.dev/mcp",
+            "headers": {
+              "Authorization": "Bearer <actual-api-key>"
+            }
+          }
+        }
+      }
+
+    Replace <actual-worker-url> and <actual-api-key> with the real
+    values captured in Phase 5 step 12. Do NOT use placeholders or
+    env var references.
+
+    - F: edit ./.mcp.json with TWO server entries, both hardcoded:
 
         {
           "mcpServers": {
             "recall-team": {
               "type": "http",
-              "url": "https://recall-<project>-team.<sub>.workers.dev/mcp",
+              "url": "https://<team-worker-url>.workers.dev/mcp",
               "headers": {
-                "Authorization": "Bearer ${RECALL_TEAM_KEY}"
+                "Authorization": "Bearer <team-api-key>"
               }
             },
             "recall-personal": {
               "type": "http",
-              "url": "https://recall-<project>-<my-handle>.<sub>.workers.dev/mcp",
+              "url": "https://<personal-worker-url>.workers.dev/mcp",
               "headers": {
-                "Authorization": "Bearer ${RECALL_PERSONAL_KEY}"
+                "Authorization": "Bearer <personal-api-key>"
               }
             }
           }
@@ -396,10 +431,10 @@ Phase 6 — Wire Recall into my MCP client(s)
       the CLAUDE.md rulebook in Phase 7c uses these names to tell
       Claude which server to use for what. Do NOT pick different names.
 
-      This .mcp.json is identical for every teammate. The difference
-      is in their env vars: each teammate's RECALL_PERSONAL_KEY
-      resolves to THEIR personal instance's key. The team key is
-      the same for everyone.
+      For option F, .mcp.json contains TWO keys (team + personal)
+      and MUST be gitignored. Each teammate creates their own local
+      .mcp.json with their own personal key. The team key is the
+      same for everyone; the personal key differs.
 
       If teammates use different handles, they will each need to
       update the `recall-personal` URL to point at their own worker
@@ -495,63 +530,22 @@ Phase 6 — Wire Recall into my MCP client(s)
        recognize, STOP and tell the user what you found rather
        than writing speculatively.
 
-15. Add the Recall API key(s) to a local .env file. This step is
-    APPEND-ONLY — if the project already has a .env file with other
-    content, DO NOT overwrite or replace it. Preserve every existing
-    line and only add what's missing.
+15. No .env file is needed for Recall. The API key is hardcoded
+    directly in .mcp.json (step 14), and .mcp.json is gitignored
+    (also step 14), so the key stays local and Claude Code reads
+    it on startup without any `source .env` step.
 
-    CRITICAL rules, in order:
+    Do NOT create a .env file for Recall keys. Do NOT add
+    RECALL_API_KEY to an existing .env file. Earlier versions of
+    this wizard used ${VAR} env-var substitution in .mcp.json,
+    which required sourcing .env before every Claude Code launch
+    and broke the "just works on restart" behavior that every
+    other MCP server provides. That pattern was wrong and is no
+    longer used.
 
-    a. Check if .env already exists at the project root. It probably
-       does — most projects have a .env for framework-specific config
-       (VITE_, EXPO_PUBLIC_, NEXT_PUBLIC_, etc.). If it exists:
-         - Read the current content verbatim
-         - Check whether RECALL_API_KEY (or the scoping-specific
-           variable names below) is already set
-         - If already set with the correct value: leave it alone
-           and skip to step 15d
-         - If already set with a DIFFERENT value: STOP and tell the
-           user which key is there, ask whether to overwrite, rotate,
-           or abort. Do not silently replace.
-         - If not set: APPEND the new line(s) to the end of the file,
-           preserving every existing line exactly. Use a blank line
-           and a comment header to visually separate the Recall
-           section from the existing content.
-
-    b. If .env does not exist, create it from scratch.
-
-    c. The lines to add (vary by scoping choice):
-
-       For scopings A, B, C, D, E:
-         # Recall MCP memory server
-         RECALL_API_KEY=<the key>
-         (For scoping C, use distinct var names like RECALL_API_KEY_WORK,
-         RECALL_API_KEY_PERSONAL per group.)
-
-       For scoping F (team + per-user personal pools):
-         # Recall MCP memory server — team + personal pools
-         RECALL_TEAM_KEY=<team key, shared with teammates>
-         RECALL_PERSONAL_KEY=<my personal key, NEVER shared>
-
-    d. After writing, chmod the file to 600 (owner read/write only).
-       Verify .env is in .gitignore. If it isn't, add it (most
-       projects already have it, but some Rust/Go/misc projects
-       don't).
-
-    e. Tell me how to source the .env before launching the client
-       (`source .env` from the project root, before running `claude`).
-       For option F, explicitly warn me: "Never share
-       RECALL_PERSONAL_KEY with anyone — it's the only thing giving
-       you true privacy on this setup. If you leak it, rotate
-       immediately with `wrangler secret put MEMORY_API_KEY --name
-       recall-<project>-<my-handle>`."
-
-    WHY this matters: an earlier version of this wizard just said
-    "Create a local .env file" and a naive implementation would
-    overwrite the existing file. Users whose projects had
-    VITE_API_PORT, database URLs, framework config, or other
-    secrets in .env would lose all of that content. Never overwrite.
-    Always read-check-append.
+    If the project already has a .env file for other purposes
+    (framework config, database URLs, etc.), leave it alone.
+    Recall does not touch it.
 
 16. Offer to delete .recall-api-key now that the key is saved in .env
     and (hopefully) my secret manager. Wait for confirmation.
@@ -795,22 +789,22 @@ Phase 7a — Connectivity check
        in /mcp, that means Claude Code didn't even detect the
        .mcp.json entry on startup. Proceed to Cause 3.
 
-     Cause 2: Env var not set in the current shell.
-       If the user sourced .env in a different terminal than the
-       one they launched claude from, the ${RECALL_API_KEY}
-       substitution in .mcp.json failed. Claude Code tries to
-       connect with a literal "${RECALL_API_KEY}" as the bearer
-       token, the server returns 401, and the client drops the
-       connection.
+     Cause 2: Bearer token in .mcp.json is empty or wrong.
+       The wizard should have hardcoded the real API key directly
+       in .mcp.json (step 14). If the file contains ${RECALL_API_KEY}
+       or an empty bearer string instead of a 64-char hex key, the
+       hardcoding step was skipped or an older version of the wizard
+       used env-var substitution (which doesn't work reliably).
 
-       Check: ask the user to run this in the terminal they
-       launched claude from (NOT a fresh terminal):
-         echo "${RECALL_API_KEY:+set}${RECALL_API_KEY:-EMPTY}"
-       If it says EMPTY, this is the cause. Fix: quit claude,
-       source .env in this shell, relaunch.
+       Check: ask the user to run:
+         grep "Bearer" .mcp.json
+       If the output contains "${RECALL_API_KEY}" or "Bearer "
+       (with nothing after it), that's the cause.
 
-       For option F: also check RECALL_TEAM_KEY and
-       RECALL_PERSONAL_KEY. Both must be set.
+       Fix: read the API key from .recall-api-key (if it still
+       exists) or from the user's secret manager, and replace the
+       bearer value in .mcp.json with the actual 64-char hex key.
+       Then restart claude.
 
      Cause 3: .mcp.json in wrong location or malformed.
        The wizard writes to the project root. If the user
@@ -1061,7 +1055,7 @@ Before saying anything to the user, do this homework:
 
    Example of a good contextualized prompt:
 
-   "Recall v1.1.2 shipped. Here's what changed and whether it
+   "Recall v1.1.3 shipped. Here's what changed and whether it
    matters for you:
 
    - Security: hashed rate-limit bucket now uses SHA-512 instead
@@ -1087,7 +1081,7 @@ Before saying anything to the user, do this homework:
 
    Example of a BAD prompt (do not do this):
 
-   "A new version of Recall is available: v1.1.2. Want to update?"
+   "A new version of Recall is available: v1.1.3. Want to update?"
 
    (That's what v1.0.0 did and it's useless. Always contextualize.)
 
@@ -1508,9 +1502,9 @@ Do this:
    - Claude Desktop: ~/Library/Application Support/Claude/claude_desktop_config.json on macOS
    - Cursor: ~/.cursor/mcp.json
    - Windsurf: ~/.codeium/windsurf/mcp_config.json
-6. Use env var substitution (${RECALL_API_KEY}) rather than hardcoding the key.
-   Create a .env file next to the config with `RECALL_API_KEY=<the key>` and
-   remind me how to source it before launching the client.
+6. Hardcode the actual API key directly in the config file (not env var
+   substitution — that breaks on restart). Ensure the config file is
+   gitignored so the key stays local.
 7. Tell me to restart the MCP client and verify that the `recall` server shows
    as connected. Offer to call retrieve_memory with a test query to confirm.
 
@@ -1623,5 +1617,6 @@ effectively — when to store, when to retrieve, how to format keys and tags.
   isolation. Deploy Recall twice with different worker names (`recall-work`,
   `recall-personal`). They'll share your Cloudflare account but have separate
   D1 databases and API keys.
-- **Never commit your API key** to git. The provided `.mcp.json` examples
-  use `${RECALL_API_KEY}` env var expansion so the config is safe to commit.
+- **Never commit your API key** to git. The `.mcp.json` file contains the
+  real key hardcoded (so Claude Code can connect on restart without env var
+  gymnastics) and must be gitignored. The wizard handles this automatically.

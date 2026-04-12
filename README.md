@@ -82,12 +82,12 @@ Most MCP memory servers do one of two things: dump text into SQLite with cosine 
 **The easiest way: paste this into Claude Code.**
 
 ```text
-Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.2/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
+Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.3/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
 ```
 
 Claude becomes the setup wizard: inspects your project, checks your environment, walks you through Cloudflare signup if you don't have an account, handles the Workers AI terms page, deploys the worker tuned for how you actually work, wires Recall into your MCP client config, and runs a full functional smoke test (hybrid search, reranker, security gates, auth). It asks how you want to organize memory across your projects before touching anything, so a solo dev with one repo and a team with ten repos get different setups tailored to them. At the end, it prints a report showing exactly how your install was adapted.
 
-No reading required. No copy-pasting commands. The command is pinned to the `v1.1.2` release tag so it behaves identically every time.
+No reading required. No copy-pasting commands. The command is pinned to the `v1.1.3` release tag so it behaves identically every time.
 
 Want to read what Claude will actually do? See [`SETUP_PROMPTS.md`](./SETUP_PROMPTS.md) — including a short "Why is the one-liner written that way?" explainer covering the four levers (pinning, explicit tool, integrity check, verbatim execution) that make the command deterministic.
 
@@ -114,6 +114,8 @@ cd recall
 
 ### Claude Code (`.mcp.json`)
 
+Create or edit `.mcp.json` in your project root with the actual worker URL and API key hardcoded (not env var substitution). **Gitignore this file** so the key stays local.
+
 ```json
 {
   "mcpServers": {
@@ -121,19 +123,14 @@ cd recall
       "type": "http",
       "url": "https://your-worker.workers.dev/mcp",
       "headers": {
-        "Authorization": "Bearer ${RECALL_API_KEY}"
+        "Authorization": "Bearer your-api-key-here"
       }
     }
   }
 }
 ```
 
-Export the key before launching Claude Code:
-
-```bash
-export RECALL_API_KEY=your-api-key-here
-claude
-```
+That's it. No `source .env`, no export, no shell setup. Claude Code reads `.mcp.json` on startup and connects automatically, just like every other MCP server.
 
 ### Claude Desktop (`claude_desktop_config.json`)
 
