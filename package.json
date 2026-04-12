@@ -35,7 +35,7 @@
     "setup": "./setup.sh"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260408.1",
+    "@cloudflare/workers-types": "^4.20260412.1",
     "typescript": "^6.0.2",
     "wrangler": "^4.81.0"
   }
