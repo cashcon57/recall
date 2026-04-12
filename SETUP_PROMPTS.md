@@ -426,11 +426,158 @@ Phase 6 — Wire Recall into my MCP client(s)
 16. Offer to delete .recall-api-key now that the key is saved in .env
     and (hopefully) my secret manager. Wait for confirmation.
 
+Phase 6.5 — Generate the resume prompt before asking the user to restart
+
+Before Phase 7 can run, the user has to restart their MCP client so
+the new .mcp.json and env vars take effect. The new session starts
+EMPTY — no memory of this wizard, no adaptations log, no scoping
+choice, no collaborator handles, nothing. Unless you hand the user
+a resume prompt that encodes the current state, they'll come back to
+a new session that has no idea what happened and will re-run the
+wizard from scratch.
+
+Generate a resume prompt now, package it in a fenced code block, and
+tell the user to paste it into their new Claude Code session AFTER
+restarting. The prompt should include every decision the user has
+made so far, adapted from the adaptations log you've been keeping
+since Phase 0.
+
+16b. Build the resume prompt. Use this template, filling in every
+     <placeholder> from the current session's adaptations log:
+
+     ```text
+     I'm mid-way through setting up Recall (the MCP memory server
+     from https://github.com/cashcon57/recall). I just restarted
+     Claude Code to pick up the new .mcp.json and env vars. Please
+     continue the setup wizard from Phase 7a (Connectivity check)
+     without re-running any earlier phase. Do NOT fetch the
+     upstream SETUP_PROMPTS.md again — the prior session already
+     made all the project-specific decisions and here's the state:
+
+     PROJECT CONTEXT (from Phase 0)
+     - What I'm building: <one-sentence summary from Phase 0>
+     - Stack: <frameworks/languages/infra>
+     - Mono-repo vs single project: <which>
+     - Existing MCP servers wired in before Recall: <list>
+     - Directory conventions noted: <if any>
+
+     MY IDENTITY
+     - Author handle for memories: <handle>
+     - Detected via: <git config | user provided | other>
+
+     SCOPING CHOICE (from Phase 2)
+     - Option picked: <A | B | C | D | E | F>
+     - Reason: <one-liner why we picked it>
+     - For option B: repos wired in: <list of paths>
+     - For option C: group names: <list>
+     - For option D: per-repo worker names: <list>
+     - For option F: team worker name: <name>, teammate handles:
+       <list>, my personal worker name: <name>
+
+     CLOUDFLARE STATE
+     - Account ID: <from wrangler whoami>
+     - Workers AI terms accepted: <yes/no>
+     - Cloudflare MCP servers connected: <bindings | docs |
+       builds | observability | none>
+
+     DEPLOYED INSTANCES (from Phase 5)
+     For each worker deployed:
+       - Worker name: <name>
+       - Worker URL: <https://...workers.dev>
+       - D1 database name: <name>
+       - Vectorize index name: <name>
+       - API key env var name: <RECALL_API_KEY or equivalent>
+     Functional smoke test result (from Phase 5 step 13): <passed | failed>
+
+     MCP CLIENT WIRING (from Phase 6)
+     - Client(s) configured: <Claude Code | Claude Desktop | Cursor | etc.>
+     - .mcp.json path: <path>
+     - Env vars needed in shell: <list of var names, NOT values>
+     - .env file path: <path>
+     - .recall-api-key deleted: <yes/no>
+
+     WHAT'S LEFT TO DO
+     - Phase 7a: Connectivity check (verify `recall` shows in /mcp)
+     - Phase 7b: Functional smoke test (10 steps — store 3 memories,
+       test BM25 path, vector path, rerank variance, metadata filter,
+       delete, destructive-tool gate, auth rejection, cleanup)
+     - Phase 7c: Teach Claude to use Recall (update CLAUDE.md)
+     - Phase 7d: Optional — context file cleanup pass
+     - Phase 7bb: Optional — upstream update check
+     - Phase 8: Print the "how this install was adapted to your
+       setup" report
+
+     Please resume at Phase 7a. Do NOT restart the wizard. Do NOT
+     re-inspect my project (Phase 0 already ran). Do NOT re-ask
+     for my scoping choice. Trust the state above. If any of this
+     looks wrong or incomplete, stop and ask me.
+     ```
+
+     CRITICAL rules for building this resume prompt:
+
+     - Fill in EVERY placeholder. Do not leave <project>, <name>,
+       <handle>, etc. in the output. If a placeholder doesn't
+       apply to the user's scoping choice (e.g. "team worker
+       name" is only for option F), omit that line entirely
+       rather than leaving an empty placeholder.
+     - Never include actual API keys or secret values in the
+       resume prompt. The prompt lists ENV VAR NAMES (like
+       RECALL_API_KEY) but not their values. Secrets stay in the
+       .env file and the user's shell.
+     - Never include the URL sub-domain prefix leakage — use the
+       full captured worker URL from Phase 5 exactly as deployed.
+     - Keep it in a single fenced code block so the user can
+       triple-click and copy the whole thing.
+
+16c. Present the resume prompt to the user with this framing:
+
+     "Setup is almost done. Before you restart Claude Code, here's
+     a resume prompt that captures everything we've decided so far.
+     Copy it and keep it somewhere — clipboard is fine, a temporary
+     note is better. After you restart Claude Code, paste this
+     prompt into the new session as your very first message.
+
+     The new session won't remember any of this conversation, so
+     the resume prompt is what lets the new Claude pick up where
+     we left off without re-running the whole wizard.
+
+     [resume prompt in a fenced code block]
+
+     Ready? When you've copied it, I'll walk you through the
+     restart and you can pick up from there."
+
+     Wait for the user to confirm they've copied the prompt
+     BEFORE moving to Phase 7.
+
 Phase 7a — Connectivity check
 
-17. Tell me to restart the MCP client and run /mcp (in Claude Code) or
-    the equivalent. Confirm `recall` shows as connected. For multi-instance
-    setups (C, D), verify each one separately.
+17. Tell me to restart the MCP client. For Claude Code: quit with
+    /quit or Cmd+Q, then re-launch `claude` in the project directory
+    AFTER sourcing the .env file (`source .env` or equivalent). For
+    Claude Desktop: fully quit and re-launch. For Cursor/Windsurf:
+    restart the editor. The restart is required so the new .mcp.json
+    is loaded and the env vars resolve inside the MCP client.
+
+    IMPORTANT: This is where the current Claude session ends. I cannot
+    continue the wizard in a new session without the resume prompt from
+    step 16b. The new session starts empty.
+
+    Tell the user to paste the resume prompt from step 16b as their
+    first message in the new session. Then the new Claude will pick
+    up from step 17a below.
+
+17a. (Runs in the new Claude Code session, after the user pastes the
+     resume prompt.) Acknowledge the resume prompt, read back the
+     state as a 3-line summary ("Here's what I see: you chose
+     scoping option X, deployed workers A and B, and are ready for
+     Phase 7a connectivity check"), and ask the user to confirm it
+     matches what they remember from the previous session before
+     proceeding. This catches any copy-paste truncation.
+
+17b. Run /mcp (in Claude Code) or the equivalent. Confirm `recall`
+     shows as connected. For multi-instance setups (C, D, F),
+     verify each one separately — in option F, both `recall-team`
+     and `recall-personal` must show as connected.
 
 18. Call recall's list_memories tool to confirm it works end to end. It
     should return "No memories stored yet" or similar.
