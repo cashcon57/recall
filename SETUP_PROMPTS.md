@@ -37,7 +37,7 @@ This works too (Prompt 0 is the canonical path referenced throughout the repo), 
 
 ## For Claude (Claude Code, Claude Desktop, or claude.ai)
 
-### Prompt 0 — First-time setup (the full wizard)
+### Prompt 0 — First-time setup
 
 This is the expanded version that the one-liner points to. You don't normally need to paste this yourself — the one-liner above tells Claude to fetch it. But if you want to read what the agent will actually do, or adapt it to something unusual, here it is.
 
