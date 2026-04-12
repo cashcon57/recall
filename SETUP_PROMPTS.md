@@ -11,7 +11,7 @@ ChatGPT can also guide you through it, but it can't run commands or edit files, 
 Paste this into Claude Code. It's written for maximum reliability: it pins to a specific release tag so behavior doesn't drift when the repo updates, tells Claude exactly which tool to use, tells it to verify the file before executing, and tells it to execute verbatim rather than summarizing.
 
 ```text
-Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.0.0/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
+Fetch https://raw.githubusercontent.com/cashcon57/recall/v1.1.0/SETUP_PROMPTS.md using Bash (curl -fsSL) so you get the raw markdown, not a summary. Verify it contains a section titled "Prompt 0 — First-time setup". Execute that section verbatim, step by step, adapted and optimized for my current project. Do not summarize. Do not skip. If the fetch fails or the section is missing, stop and tell me.
 ```
 
 If you only remember one thing from this file, remember that.
@@ -20,7 +20,7 @@ If you only remember one thing from this file, remember that.
 
 Four small choices make the difference between "works most of the time" and "works every time":
 
-1. **Pinned to `v1.0.0`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
+1. **Pinned to `v1.1.0`, not `main`.** If the repo updates tomorrow, your command still behaves identically. To opt into new features, bump the version string manually.
 2. **`raw.githubusercontent.com`, not `github.com`.** Returns raw markdown, not an HTML page. No parsing variance.
 3. **Explicit `Bash (curl -fsSL)`.** "Fetch" is ambiguous — Claude could use WebFetch (which summarizes), clone the repo, or skim. Naming the exact tool eliminates the branch and, critically, avoids WebFetch's auto-summarization — `curl` returns raw markdown byte-for-byte, which is what the wizard needs to execute verbatim.
 4. **"Verbatim, step by step" + integrity check.** Makes Claude execute the file instead of summarizing it. The "verify the section exists" step catches fetch failures, repo moves, or cache staleness before anything executes.
