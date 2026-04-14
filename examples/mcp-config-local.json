@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "recall-local": {
+      "command": "node",
+      "args": ["/absolute/path/to/recall/local/dist/local/src/server.js"],
+      "env": {
+        "RECALL_DB_PATH": "/Users/<you>/.recall/recall.db",
+        "SQLITE_VEC_PATH": "/absolute/path/to/recall/local/sqlite-vec.dylib"
+      }
+    }
+  }
+}

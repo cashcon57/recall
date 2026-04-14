@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "recall-docker": {
+      "url": "http://localhost:8788",
+      "headers": {
+        "Authorization": "Bearer <your-MEMORY_API_KEY>"
+      }
+    }
+  }
+}
