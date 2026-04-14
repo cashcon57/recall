@@ -8,6 +8,21 @@ const SERVER_INFO = {
   version: '1.0.0',
 };
 
+const SERVER_INSTRUCTIONS = `Recall MCP is connected — use it for persistent memory across sessions.
+
+ON EVERY SESSION START: call retrieve_memory with the current project name or task as the query to load relevant context before doing any work.
+
+STORE with store_memory whenever you learn:
+- User preferences or feedback ("don't do X", "always do Y")
+- Credentials, tokens, account IDs
+- Architectural decisions and their rationale
+- Project-specific gotchas or constraints
+- Anything the user explicitly asks you to remember
+
+RETRIEVE proactively — don't wait to be asked. If the user references something that might be in memory (a project, a pattern, a credential), query Recall first.
+
+Use importance 0.8+ for critical gotchas and credentials. Use 0.5 for general context. Use 0.3 for nice-to-know.`;
+
 const SERVER_CAPABILITIES = {
   tools: {},
 };
@@ -66,6 +81,7 @@ function handleInitialize(id: string | number): JsonRpcResponse {
     protocolVersion: '2025-03-26',
     capabilities: SERVER_CAPABILITIES,
     serverInfo: SERVER_INFO,
+    instructions: SERVER_INSTRUCTIONS,
   });
 }
 
