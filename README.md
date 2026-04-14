@@ -1,5 +1,6 @@
 # Recall
 
+[![Release](https://img.shields.io/github/v/release/cashcon57/recall?color=brightgreen)](https://github.com/cashcon57/recall/releases/latest)
 [![CI](https://github.com/cashcon57/recall/actions/workflows/ci.yml/badge.svg)](https://github.com/cashcon57/recall/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](./tsconfig.json)
@@ -702,16 +703,14 @@ Yes. `npx wrangler d1 export recall --output=backup.sql`. This gives you a SQLit
 **What embedding model is best for non-English?**
 `bge-m3` (the default) is multilingual and works well for most languages. If you only need English, `bge-small-en-v1.5` is smaller and cheaper — swap it in `src/tools.ts` and recreate the Vectorize index with dimension 384.
 
-**Why Cloudflare? Why not Docker or a VPS?**
-Deliberate tradeoff. Cloudflare gives Recall four things that matter for this specific product: D1 (SQLite with FTS5 built in), Vectorize (managed 1024D index with metadata filters), Workers AI (free-tier `bge-m3` + `bge-reranker-base` embeddings and reranking), and Workers itself (sub-10ms cold start, generous free tier, no container to maintain). Putting all of that on one vendor is what makes the product $0/month, one-command install, and zero ops for the 95% use case.
+**Why Cloudflare as the default backend?**
+Cloudflare gives Recall four things that matter: D1 (SQLite with FTS5 built in), Vectorize (managed 1024D index with metadata filters), Workers AI (free-tier `bge-m3` + `bge-reranker-base` embeddings and reranking), and Workers itself (sub-10ms cold start, generous free tier, no container to maintain). Putting all of that on one vendor is what makes it $0/month, one-command install, and zero ops for the 95% use case.
 
-A Docker path means: Postgres or SQLite + pgvector, a local embedding model via ollama or llama.cpp, a Node/Bun server replacing the Workers runtime, a docker-compose stack, volume mounts, update flow, and a VPS or home server. That's a meaningfully different product — slower, costs money (VPS or your electricity), more moving parts, loses the Claude-Code one-line install — but it's the right choice for people who genuinely need local-first, airgapped, or non-Cloudflare infra.
-
-**Can I run Recall outside Cloudflare Workers today?**
-Not yet. The v1.0.0 codebase uses Cloudflare-specific bindings (D1, Vectorize, Workers AI) so porting is a rewrite, not a config flag. A Docker-based path (Postgres + pgvector + local embeddings) is actively in the works and will ship in a later release — not this week, but it's not vaporware. If you want to help get it out sooner, PRs are welcome. Track or propose the work at [github.com/cashcon57/recall/issues](https://github.com/cashcon57/recall/issues).
+**Can I run Recall outside Cloudflare Workers?**
+Yes, since v2.0.0. Two alternative backends ship in the same repo: a local stdio server (better-sqlite3 + sqlite-vec, fully offline) and a Docker HTTP server (Postgres + pgvector). All three backends implement the same `RecallAdapter` interface and expose the same MCP tool surface. See [Deployment Options](#deployment-options) for the matrix.
 
 **But I'm still nervous about Cloudflare having my memories.**
-Worth saying clearly: Recall runs on YOUR Cloudflare account, not a shared service. The code is MIT, the worker is deployed under your own CF credentials, the D1 database lives in your account, the API key is yours, and the data never leaves your CF tenant. It's self-hosted in the same sense that running Postgres on AWS RDS is self-hosted — Cloudflare is the substrate, not the vendor you're sharing data with. If that's still not sufficient (auditability, compliance, or you just don't trust CF specifically), wait for the Docker path or use one of the alternatives in the [How it compares](#how-it-compares) table.
+Worth saying clearly: on the CF backend, Recall runs on YOUR Cloudflare account, not a shared service. The code is MIT, the worker is deployed under your own CF credentials, the D1 database lives in your account, the API key is yours, and the data never leaves your CF tenant. It's self-hosted in the same sense that running Postgres on AWS RDS is self-hosted — Cloudflare is the substrate, not the vendor you're sharing data with. If that's still not sufficient (auditability, compliance, or you just don't trust CF specifically), use the [local stdio](#quickstart--local-stdio) or [Docker](#quickstart--docker) backend — both run without any cloud dependencies.
 
 **Is this production-ready?**
 For personal and small-team use, yes. For mission-critical multi-tenant SaaS, no — each Recall instance is single-tenant by design and has no per-user access control within an instance. See [`SECURITY.md`](./SECURITY.md) for the full threat model.
