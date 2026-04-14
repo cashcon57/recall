@@ -6,8 +6,8 @@ import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-const EMBED_MODEL = 'Xenova/bge-base-en-v1.5';
-const EMBED_DIM = 768;
+const EMBED_MODEL = 'Xenova/bge-m3';
+const EMBED_DIM = 1024;
 const __dirname_local = dirname(fileURLToPath(import.meta.url));
 
 export class LocalAdapter implements RecallAdapter {
@@ -40,7 +40,7 @@ export class LocalAdapter implements RecallAdapter {
     } catch (e) {
       throw new Error(
         `Failed to load sqlite-vec from ${vecPath} (entrypoint: ${vecEntrypoint}). ` +
-        `Set SQLITE_VEC_PATH (without extension) and optionally SQLITE_VEC_ENTRYPOINT. ` +
+        `Set SQLITE_VEC_PATH (path to sqlite-vec extension, with or without file extension) and optionally SQLITE_VEC_ENTRYPOINT. ` +
         `Error: ${String(e)}`
       );
     }

@@ -12,6 +12,9 @@ import { handleMcpRequestWithAdapter, parseJsonRpc } from '../../src/mcp.js';
 
 const PORT = parseInt(process.env.PORT ?? '8788');
 const API_KEY = process.env.MEMORY_API_KEY ?? 'local-dev';
+if (!process.env.MEMORY_API_KEY) {
+  process.stderr.write('[recall-docker] WARNING: MEMORY_API_KEY not set — using insecure default "local-dev"\n');
+}
 
 let adapter: DockerAdapter;
 try {

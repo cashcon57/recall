@@ -4,7 +4,7 @@ const { Pool } = pg;
 import { pipeline } from '@huggingface/transformers';
 import type { RecallAdapter, VectorMatch } from '../../src/adapter.js';
 
-const EMBED_MODEL = 'Xenova/bge-base-en-v1.5';
+const EMBED_MODEL = 'Xenova/bge-m3';
 
 function toPostgresParams(sql: string): string {
   let i = 1;

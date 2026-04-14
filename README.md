@@ -34,16 +34,16 @@ flowchart TD
 
     subgraph Local["💻  Local stdio (no cloud)"]
         LST["stdio server"]
-        LSQL[("SQLite +\nsqlite-vec 768D")]
-        LEMB["HF Transformers\nbge-base-en-v1.5"]
+        LSQL[("SQLite +\nsqlite-vec 1024D")]
+        LEMB["HF Transformers\nbge-m3"]
         LST --> LSQL
         LST --> LEMB
     end
 
     subgraph Docker["🐳  Docker HTTP"]
         DSV["HTTP server"]
-        PG[("Postgres +\npgvector 768D")]
-        DEMB["HF Transformers\nbge-base-en-v1.5"]
+        PG[("Postgres +\npgvector 1024D")]
+        DEMB["HF Transformers\nbge-m3"]
         DSV --> PG
         DSV --> DEMB
     end
@@ -60,13 +60,13 @@ Three backends. Same tool surface. Choose what fits your infra:
 | | Cloudflare Workers | Local stdio | Docker HTTP |
 |---|---|---|---|
 | **Infrastructure** | CF D1 + Vectorize + Workers AI | SQLite + sqlite-vec | Postgres + pgvector |
-| **Embeddings** | bge-m3, 1024D | bge-base-en-v1.5, 768D | bge-base-en-v1.5, 768D |
+| **Embeddings** | bge-m3, 1024D | bge-m3, 1024D | bge-m3, 1024D |
 | **Internet required** | Yes | No | No |
 | **MCP transport** | HTTP | stdio | HTTP |
 | **Cost** | Free tier | Free | Free |
 | **Best for** | Production, team sharing | Offline, privacy-first | Self-hosted server |
 
-> ⚠️ **Memories are NOT portable between backends.** Cloudflare uses 1024D vectors (bge-m3); local and Docker use 768D (bge-base-en-v1.5). These are different vector spaces — embeddings from one backend cannot be used in another.
+> All three backends now use identical embeddings (bge-m3, 1024D). Memories are portable across backends.
 
 ## Why Recall?
 
@@ -181,14 +181,14 @@ Add to your MCP client config (copy from `examples/mcp-config-local.json`):
       "args": ["/absolute/path/to/recall/local/dist/local/src/server.js"],
       "env": {
         "RECALL_DB_PATH": "/Users/<you>/.recall/recall.db",
-        "SQLITE_VEC_PATH": "/absolute/path/to/recall/local/sqlite-vec.dylib"
+        "SQLITE_VEC_PATH": "/absolute/path/to/recall/local/sqlite-vec"
       }
     }
   }
 }
 ```
 
-> **Note:** The first `retrieve_memory` or `store_memory` call downloads the bge-base-en-v1.5 model (~200MB) from HuggingFace. Subsequent calls use the local cache.
+> **Note:** The first `retrieve_memory` or `store_memory` call downloads the bge-m3 model (~570MB) from HuggingFace. Subsequent calls use the local cache. better-sqlite3 appends the platform extension (`.dylib` / `.so`) to `SQLITE_VEC_PATH` automatically — omit the extension in the config.
 
 
 ## Quickstart — Docker

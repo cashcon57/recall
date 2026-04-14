@@ -25,7 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING GIN(
 
 CREATE TABLE IF NOT EXISTS vec_memories (
   key TEXT PRIMARY KEY,
-  embedding vector(768) NOT NULL
+  embedding vector(1024) NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_vec_hnsw ON vec_memories
