@@ -7,6 +7,9 @@ dist/
 .cache/
 *.tsbuildinfo
 
+# Stray tsc output in shared src/ (local/docker builds use rootDir="..")
+src/**/*.js
+
 # Local config (contains database_id after setup)
 wrangler.toml
 wrangler.toml.bak
