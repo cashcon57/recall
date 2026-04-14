@@ -1,0 +1,21 @@
+{
+  "name": "recall-docker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/docker/src/server.js",
+  "scripts": {
+    "build": "tsc && node fix-imports.mjs",
+    "start": "node dist/docker/src/server.js"
+  },
+  "dependencies": {
+    "pg": "^8.11.3",
+    "@huggingface/transformers": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "@types/node": "^20.11.0",
+    "@cloudflare/workers-types": "^4.0.0",
+    "typescript": "^5.4.0"
+  }
+}
