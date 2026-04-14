@@ -66,7 +66,7 @@ Three backends. Same tool surface. Choose what fits your infra:
 | **Cost** | Free tier | Free | Free |
 | **Best for** | Production, team sharing | Offline, privacy-first | Self-hosted server |
 
-> All three backends now use identical embeddings (bge-m3, 1024D). Memories are portable across backends.
+> **Memory portability between backends:** All three backends use the bge-m3 model (1024D embeddings). Local and Docker backends run the [Xenova ONNX export](https://huggingface.co/Xenova/bge-m3) with CLS pooling to match the reference recipe. Vector compatibility across backends is close in practice — semantic search works cross-backend — but exact bit-for-bit portability is not yet verified with an end-to-end smoke test. If strict portability matters, test your workload before migrating.
 
 ## Why Recall?
 
