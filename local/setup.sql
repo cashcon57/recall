@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS memories (
   importance REAL NOT NULL DEFAULT 0.5,
   author TEXT NOT NULL,
   memory_type TEXT NOT NULL DEFAULT 'semantic',
+  namespace TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   accessed_at TEXT NOT NULL,
@@ -16,6 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
 CREATE INDEX IF NOT EXISTS idx_memories_author ON memories(author);
 CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
 CREATE INDEX IF NOT EXISTS idx_memories_accessed_at ON memories(accessed_at);
+CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   key,

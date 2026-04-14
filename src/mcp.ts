@@ -7,7 +7,7 @@ import { TOOL_DEFINITIONS, executeTool } from './tools';
 
 const SERVER_INFO = {
   name: 'recall',
-  version: '2.0.0',
+  version: '2.1.0',
 };
 
 const SERVER_INSTRUCTIONS = `Recall MCP is connected — use it for persistent memory across sessions.

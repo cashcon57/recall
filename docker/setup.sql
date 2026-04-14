@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS memories (
   importance REAL NOT NULL DEFAULT 0.5,
   author TEXT NOT NULL,
   memory_type TEXT NOT NULL DEFAULT 'semantic',
+  namespace TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -18,6 +19,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
 CREATE INDEX IF NOT EXISTS idx_memories_author ON memories(author);
 CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
 CREATE INDEX IF NOT EXISTS idx_memories_accessed_at ON memories(accessed_at);
+CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace);
 
 CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING GIN(
   to_tsvector('english', content || ' ' || key)

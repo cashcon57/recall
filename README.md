@@ -351,12 +351,32 @@ All tools are callable via the standard MCP `tools/call` method.
 
 | Tool                   | Purpose |
 |------------------------|---------|
-| `store_memory`         | Save a memory under a unique key with tags, importance (0–1), and author. Auto-generates embedding. Refuses if a near-duplicate exists under a different key. |
-| `retrieve_memory`      | Hybrid search (vector + BM25 → RRF → rerank → recency decay → importance). Returns top-N with combined scores. |
-| `list_memories`        | Browse with pagination + filters (tag, author, limit, offset). Returns metadata only. |
-| `delete_memory`        | Remove a memory by key from D1, FTS5, and Vectorize. |
+| `store_memory`         | Save a memory under a unique key with tags, importance (0–1), author, and optional `namespace`. Auto-generates embedding. Refuses if a near-duplicate exists under a different key. |
+| `retrieve_memory`      | Hybrid search (vector + BM25 → RRF → rerank → recency decay → importance). Returns top-N with combined scores. Optional `namespace` filter. |
+| `list_memories`        | Browse with pagination + filters (tag, author, `namespace`, limit, offset). Returns metadata only. |
+| `get_related_memories` | Traverse the auto-relationship graph from a given key. Returns related memories ranked by edge strength. |
+| `delete_memory`        | Remove a memory by key from the store, FTS, and the vector index. |
 | `clear_memories`       | Wipe everything. **Default-disabled** — requires both `confirm: true` AND the `ALLOW_DESTRUCTIVE_TOOLS=true` secret on the worker. See [Security](#security) for why. |
 | `consolidate_memories` | Read-only analysis: flags similar memory pairs and stale entries. Returns a markdown report. |
+
+### Namespaces (v2.1+)
+
+Namespaces isolate memories per project or scope. A memory stored with `namespace: "project-alpha"` is only returned when the search/list call passes that same namespace. Memories stored without a namespace are global — they appear in un-filtered queries but are **excluded** when a namespace filter is active.
+
+```json
+{ "name": "store_memory", "arguments": {
+  "key": "auth-flow", "content": "...", "author": "cash",
+  "namespace": "project-alpha"
+}}
+```
+
+```json
+{ "name": "retrieve_memory", "arguments": {
+  "query": "auth token expiry", "namespace": "project-alpha"
+}}
+```
+
+Format: alphanumeric, hyphens, underscores, dots (same as `key`). Max 128 chars.
 
 ### `store_memory` example
 
