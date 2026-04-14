@@ -57,6 +57,11 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
           description:
             'Memory tier controlling recency decay half-life. episodic = 7d (events, session context), semantic = 69d (concepts, facts — default), procedural = 693d (stable rules, patterns, credentials).',
         },
+        namespace: {
+          type: 'string',
+          description:
+            'Optional project/scope identifier. Memories with a namespace are only returned when retrieve_memory/list_memories filter by the same namespace. Use to isolate memories across projects. Format: alphanumeric, hyphens, underscores, dots.',
+        },
       },
       required: ['key', 'content', 'author'],
     },
@@ -89,6 +94,11 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
           items: { type: 'string' },
           description: 'Filter results to memories that have at least one of these tags',
         },
+        namespace: {
+          type: 'string',
+          description:
+            'Filter to memories stored in this namespace. Omit to search across all memories (including unnamespaced ones). When set, unnamespaced memories are NOT returned.',
+        },
       },
       required: ['query'],
     },
@@ -102,6 +112,10 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
       properties: {
         tag: { type: 'string', description: 'Filter by tag' },
         author: { type: 'string', description: 'Filter by author' },
+        namespace: {
+          type: 'string',
+          description: 'Filter to this namespace. Omit to list across all memories.',
+        },
         limit: {
           type: 'number',
           minimum: 1,
@@ -212,8 +226,23 @@ const MAX_QUERY_LEN = 1000;
 
 const VALID_MEMORY_TYPES = new Set<MemoryType>(['episodic', 'semantic', 'procedural']);
 
+const MAX_NAMESPACE_LEN = 128;
+
+function validateNamespace(raw: unknown): string | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (typeof raw !== 'string' || raw.length > MAX_NAMESPACE_LEN) {
+    throw new Error(`namespace must be a non-empty string (max ${MAX_NAMESPACE_LEN} chars)`);
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (!KEY_PATTERN.test(trimmed)) {
+    throw new Error('namespace must contain only alphanumeric characters, hyphens, underscores, and dots');
+  }
+  return trimmed;
+}
+
 function validateStoreInput(args: Record<string, unknown>): StoreMemoryInput {
-  const { key, content, tags, importance, author, memory_type } = args;
+  const { key, content, tags, importance, author, memory_type, namespace } = args;
 
   if (typeof key !== 'string' || key.length === 0 || key.length > MAX_KEY_LEN) {
     throw new Error(`key must be a non-empty string (max ${MAX_KEY_LEN} chars)`);
@@ -265,11 +294,12 @@ function validateStoreInput(args: Record<string, unknown>): StoreMemoryInput {
     importance: validatedImportance,
     author: author.trim(),
     memory_type: validatedMemoryType,
+    namespace: validateNamespace(namespace),
   };
 }
 
 function validateRetrieveInput(args: Record<string, unknown>): RetrieveMemoryInput {
-  const { query, limit, min_importance, tags } = args;
+  const { query, limit, min_importance, tags, namespace } = args;
 
   if (typeof query !== 'string' || query.length === 0 || query.length > MAX_QUERY_LEN) {
     throw new Error(`query must be a non-empty string (max ${MAX_QUERY_LEN} chars)`);
@@ -297,6 +327,9 @@ function validateRetrieveInput(args: Record<string, unknown>): RetrieveMemoryInp
     });
   }
 
+  const ns = validateNamespace(namespace);
+  if (ns) result.namespace = ns;
+
   return result;
 }
 
@@ -322,6 +355,8 @@ function validateListInput(args: Record<string, unknown>): ListMemoriesInput {
     }
     result.offset = args.offset;
   }
+  const ns = validateNamespace(args.namespace);
+  if (ns) result.namespace = ns;
   return result;
 }
 
@@ -489,23 +524,27 @@ export async function executeTool(
   args: Record<string, unknown>,
   adapter: RecallAdapter,
 ): Promise<McpToolResult> {
-  switch (name) {
-    case 'store_memory':
-      return storeMemory(validateStoreInput(args), adapter);
-    case 'retrieve_memory':
-      return retrieveMemory(validateRetrieveInput(args), adapter);
-    case 'list_memories':
-      return listMemories(validateListInput(args), adapter);
-    case 'delete_memory':
-      return deleteMemory(validateDeleteInput(args), adapter);
-    case 'clear_memories':
-      return clearMemories(validateClearInput(args), adapter);
-    case 'consolidate_memories':
-      return consolidateMemories(validateConsolidateInput(args), adapter);
-    case 'get_related_memories':
-      return getRelatedMemories(validateGetRelatedInput(args), adapter);
-    default:
-      return textResult(`Unknown tool: ${name}`, true);
+  try {
+    switch (name) {
+      case 'store_memory':
+        return await storeMemory(validateStoreInput(args), adapter);
+      case 'retrieve_memory':
+        return await retrieveMemory(validateRetrieveInput(args), adapter);
+      case 'list_memories':
+        return await listMemories(validateListInput(args), adapter);
+      case 'delete_memory':
+        return await deleteMemory(validateDeleteInput(args), adapter);
+      case 'clear_memories':
+        return await clearMemories(validateClearInput(args), adapter);
+      case 'consolidate_memories':
+        return await consolidateMemories(validateConsolidateInput(args), adapter);
+      case 'get_related_memories':
+        return await getRelatedMemories(validateGetRelatedInput(args), adapter);
+      default:
+        return textResult(`Unknown tool: ${name}`, true);
+    }
+  } catch (err) {
+    return textResult(err instanceof Error ? err.message : 'Tool execution failed', true);
   }
 }
 
@@ -551,16 +590,17 @@ async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Pro
   // 1. D1 — source of truth. If this fails, nothing is stored anywhere.
   try {
     await adapter.query(
-      `INSERT INTO memories (id, key, content, tags, importance, author, memory_type, created_at, updated_at, accessed_at, access_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      `INSERT INTO memories (id, key, content, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at, access_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
        ON CONFLICT (key) DO UPDATE SET
          content = excluded.content,
          tags = excluded.tags,
          importance = excluded.importance,
          author = excluded.author,
          memory_type = excluded.memory_type,
+         namespace = excluded.namespace,
          updated_at = excluded.updated_at`,
-      [id, input.key, input.content, JSON.stringify(input.tags), input.importance, input.author, input.memory_type, now, now, now],
+      [id, input.key, input.content, JSON.stringify(input.tags), input.importance, input.author, input.memory_type, input.namespace, now, now, now],
     );
   } catch (err) {
     console.error('[storeMemory] D1 upsert failed:', err instanceof Error ? err.message : err, { key: input.key });
@@ -718,6 +758,11 @@ async function retrieveMemory(input: RetrieveMemoryInput, adapter: RecallAdapter
     memories = memories.filter((m) => input.tags!.some((t) => m.tags.includes(t)));
   }
 
+  // Post-query namespace filter — unnamespaced memories are NOT returned when a namespace is specified
+  if (input.namespace) {
+    memories = memories.filter((m) => m.namespace === input.namespace);
+  }
+
   if (!memories.length) {
     return textResult('No memories found matching your query and filters.');
   }
@@ -776,7 +821,7 @@ async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): P
   const limit = input.limit ?? 50;
   const offset = input.offset ?? 0;
 
-  let query = 'SELECT key, tags, importance, author, memory_type, created_at, updated_at, accessed_at, access_count FROM memories';
+  let query = 'SELECT key, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at, access_count FROM memories';
   let countQuery = 'SELECT COUNT(*) as total FROM memories';
   const conditions: string[] = [];
   const bindings: unknown[] = [];
@@ -784,6 +829,11 @@ async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): P
   if (input.author) {
     conditions.push('author = ?');
     bindings.push(input.author);
+  }
+
+  if (input.namespace) {
+    conditions.push('namespace = ?');
+    bindings.push(input.namespace);
   }
 
   if (conditions.length) {
@@ -814,6 +864,7 @@ async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): P
     importance: r.importance,
     author: r.author,
     memory_type: r.memory_type,
+    namespace: r.namespace,
     updated_at: r.updated_at,
     access_count: r.access_count,
   }));
@@ -827,10 +878,10 @@ async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): P
     return textResult('No memories match the specified filters.');
   }
 
-  const lines = items.map(
-    (m) =>
-      `- **${m.key}** [${m.importance}] ${m.memory_type} by ${m.author} — tags: ${m.tags.join(', ') || 'none'} (updated: ${m.updated_at}, accessed: ${m.access_count}x)`,
-  );
+  const lines = items.map((m) => {
+    const nsPart = m.namespace ? ` [ns: ${m.namespace}]` : '';
+    return `- **${m.key}**${nsPart} [${m.importance}] ${m.memory_type} by ${m.author} — tags: ${m.tags.join(', ') || 'none'} (updated: ${m.updated_at}, accessed: ${m.access_count}x)`;
+  });
 
   const pageInfo = `Showing ${offset + 1}–${offset + items.length} of ${total}`;
 

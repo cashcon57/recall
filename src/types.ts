@@ -25,6 +25,7 @@ export interface Memory {
   importance: number;
   author: string;
   memory_type: MemoryType;
+  namespace: string | null;
   created_at: string;
   updated_at: string;
   accessed_at: string;
@@ -40,6 +41,7 @@ export interface MemoryRow {
   importance: number;
   author: string;
   memory_type: MemoryType;
+  namespace: string | null;
   created_at: string;
   updated_at: string;
   accessed_at: string;
@@ -98,6 +100,7 @@ export interface StoreMemoryInput {
   importance: number;
   author: string;
   memory_type: MemoryType;
+  namespace: string | null;
 }
 
 export interface GetRelatedMemoriesInput {
@@ -111,11 +114,13 @@ export interface RetrieveMemoryInput {
   limit?: number;
   min_importance?: number;
   tags?: string[];
+  namespace?: string;
 }
 
 export interface ListMemoriesInput {
   tag?: string;
   author?: string;
+  namespace?: string;
   limit?: number;
   offset?: number;
 }
