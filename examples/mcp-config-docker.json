@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "recall-docker": {
-      "url": "http://localhost:8788",
+      "url": "http://localhost:8788/mcp",
       "headers": {
         "Authorization": "Bearer <your-MEMORY_API_KEY>"
       }

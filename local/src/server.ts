@@ -22,6 +22,7 @@ mkdirSync(resolve(DB_PATH, '..'), { recursive: true });
 let adapter: LocalAdapter;
 try {
   adapter = new LocalAdapter(DB_PATH);
+  await adapter.init();
   process.stderr.write(`recall-local started. DB: ${DB_PATH}\n`);
 } catch (e) {
   const errMsg = e instanceof Error ? e.message : String(e);
