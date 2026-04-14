@@ -1,4 +1,6 @@
 import type { Env, JsonRpcRequest, JsonRpcResponse } from './types';
+import type { RecallAdapter } from './adapter';
+import { CloudflareAdapter } from './adapters/cloudflare';
 import { TOOL_DEFINITIONS, executeTool } from './tools';
 
 // ─── Server metadata ────────────────────────────────────────────────
@@ -55,6 +57,14 @@ export async function handleMcpRequest(
   request: JsonRpcRequest,
   env: Env,
 ): Promise<JsonRpcResponse | null> {
+  const adapter = new CloudflareAdapter(env);
+  return handleMcpRequestWithAdapter(request, adapter);
+}
+
+export async function handleMcpRequestWithAdapter(
+  request: JsonRpcRequest,
+  adapter: RecallAdapter,
+): Promise<JsonRpcResponse | null> {
   const { method, params, id } = request;
 
   // Notifications (no id) don't receive responses per JSON-RPC spec.
@@ -70,15 +80,18 @@ export async function handleMcpRequest(
     case 'tools/list':
       return successResponse(id, { tools: TOOL_DEFINITIONS });
     case 'tools/call':
-      return handleToolsCall(id, params, env);
+      return handleToolsCall(id, params, adapter);
     default:
       return errorResponse(id, METHOD_NOT_FOUND, `Unknown method: ${method}`);
   }
 }
 
+// Alias for backwards compatibility
+export { handleMcpRequestWithAdapter as handleRequestWithAdapter };
+
 function handleInitialize(id: string | number): JsonRpcResponse {
   return successResponse(id, {
-    protocolVersion: '2025-03-26',
+    protocolVersion: '2025-06-18',
     capabilities: SERVER_CAPABILITIES,
     serverInfo: SERVER_INFO,
     instructions: SERVER_INSTRUCTIONS,
@@ -88,7 +101,7 @@ function handleInitialize(id: string | number): JsonRpcResponse {
 async function handleToolsCall(
   id: string | number,
   params: Record<string, unknown> | undefined,
-  env: Env,
+  adapter: RecallAdapter,
 ): Promise<JsonRpcResponse> {
   if (!params || typeof params.name !== 'string') {
     return errorResponse(id, INVALID_PARAMS, 'Missing tool name');
@@ -102,7 +115,7 @@ async function handleToolsCall(
   }
 
   try {
-    const result = await executeTool(toolName, toolArgs, env);
+    const result = await executeTool(toolName, toolArgs, adapter);
     return successResponse(id, result);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Tool execution failed';

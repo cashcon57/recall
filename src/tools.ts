@@ -1,5 +1,4 @@
 import type {
-  Env,
   Memory,
   MemoryRow,
   MemoryType,
@@ -13,6 +12,7 @@ import type {
   ConsolidateMemoriesInput,
   GetRelatedMemoriesInput,
 } from './types';
+import type { RecallAdapter } from './adapter';
 
 // ─── Tool definitions (exposed via tools/list) ─────────────────────
 
@@ -384,8 +384,6 @@ function validateConsolidateInput(args: Record<string, unknown>): ConsolidateMem
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
-const EMBEDDING_DIM = 1024; // bge-m3 is 1024-dimensional
-
 // Half-life decay per memory tier (NornicDB-inspired).
 // episodic = 7d (session context, events), semantic = 69d (concepts, facts),
 // procedural = 693d (stable rules, credentials, architecture).
@@ -402,28 +400,9 @@ const HALF_LIFE_HOURS: Record<string, number> = {
 const AUTO_LINK_THRESHOLD = 0.82;
 const AUTO_LINK_TOP_K = 5;
 
-async function generateEmbedding(ai: Ai, text: string): Promise<number[]> {
-  const result = await ai.run('@cf/baai/bge-m3', {
-    text: [text],
-  });
-  const embeddingData = result as unknown as { data: number[][] };
-  const vec = embeddingData?.data?.[0];
-  if (!Array.isArray(vec)) {
-    throw new Error('Embedding generation returned no data');
-  }
-  if (vec.length !== EMBEDDING_DIM) {
-    throw new Error(
-      `Embedding generation returned unexpected dimension: got ${vec.length}, expected ${EMBEDDING_DIM}. ` +
-        `This usually means Workers AI returned a malformed response or the model changed. ` +
-        `Check wrangler tail for the underlying error.`,
-    );
-  }
-  return vec;
-}
-
-/** Query D1 FTS5 for keyword/BM25 matches. Returns keys in rank order. */
+/** Query FTS5 for keyword/BM25 matches. Returns keys in rank order. */
 async function ftsSearch(
-  db: D1Database,
+  adapter: RecallAdapter,
   query: string,
   limit: number,
 ): Promise<string[]> {
@@ -432,11 +411,11 @@ async function ftsSearch(
   if (!safeQuery) return [];
 
   try {
-    const rows = await db.prepare(
-      `SELECT key FROM memories_fts WHERE memories_fts MATCH ?1 ORDER BY rank LIMIT ?2`,
-    ).bind(safeQuery, limit).all<{ key: string }>();
-
-    return rows.results?.map((r) => r.key) ?? [];
+    const rows = await adapter.query<{ key: string }>(
+      `SELECT key FROM memories_fts WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?`,
+      [safeQuery, limit],
+    );
+    return rows.map((r) => r.key);
   } catch (err) {
     // FTS query can fail on certain inputs (parse errors, D1 outages).
     // We return [] so the caller's hybrid search still functions via
@@ -467,8 +446,8 @@ function truncateForRerank(content: string): string {
  * (passed via `fallbackScores`) rather than uniform 0.5, so final ranking
  * stays meaningful on reranker error.
  */
-async function rerank(
-  ai: Ai,
+async function rerankMemories(
+  adapter: RecallAdapter,
   query: string,
   memories: Memory[],
   fallbackScores?: Map<string, number>,
@@ -476,23 +455,16 @@ async function rerank(
   if (!memories.length) return [];
 
   try {
-    const result = await (ai as unknown as { run(model: string, input: unknown): Promise<unknown> }).run(
-      '@cf/baai/bge-reranker-base',
-      {
-        query,
-        contexts: memories.map((m) => truncateForRerank(m.content)),
-      },
-    ) as { data: Array<{ index: number; score: number }> };
+    const passages = memories.map((m) => truncateForRerank(m.content));
+    const scores = await adapter.rerank(query, passages);
 
     // Sigmoid to normalize raw scores to [0, 1]
     const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
 
-    if (result?.data?.length) {
-      return result.data.map((r) => ({
-        memory: memories[r.index],
-        rerankerScore: sigmoid(r.score),
-      }));
-    }
+    return memories.map((memory, i) => ({
+      memory,
+      rerankerScore: sigmoid(scores[i]),
+    }));
   } catch {
     // Reranker failure — fall back to RRF scores below
   }
@@ -539,23 +511,23 @@ function textResult(text: string, isError = false): McpToolResult {
 export async function executeTool(
   name: string,
   args: Record<string, unknown>,
-  env: Env,
+  adapter: RecallAdapter,
 ): Promise<McpToolResult> {
   switch (name) {
     case 'store_memory':
-      return storeMemory(validateStoreInput(args), env);
+      return storeMemory(validateStoreInput(args), adapter);
     case 'retrieve_memory':
-      return retrieveMemory(validateRetrieveInput(args), env);
+      return retrieveMemory(validateRetrieveInput(args), adapter);
     case 'list_memories':
-      return listMemories(validateListInput(args), env);
+      return listMemories(validateListInput(args), adapter);
     case 'delete_memory':
-      return deleteMemory(validateDeleteInput(args), env);
+      return deleteMemory(validateDeleteInput(args), adapter);
     case 'clear_memories':
-      return clearMemories(validateClearInput(args), env);
+      return clearMemories(validateClearInput(args), adapter);
     case 'consolidate_memories':
-      return consolidateMemories(validateConsolidateInput(args), env);
+      return consolidateMemories(validateConsolidateInput(args), adapter);
     case 'get_related_memories':
-      return getRelatedMemories(validateGetRelatedInput(args), env);
+      return getRelatedMemories(validateGetRelatedInput(args), adapter);
     default:
       return textResult(`Unknown tool: ${name}`, true);
   }
@@ -563,21 +535,18 @@ export async function executeTool(
 
 // ─── Tool implementations ───────────────────────────────────────────
 
-async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolResult> {
+async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Promise<McpToolResult> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
   // Generate embedding from content
-  const embedding = await generateEmbedding(env.AI, input.content);
+  const embedding = await adapter.embed(input.content);
 
   // Deduplication check — warn if very similar content exists under a different key
-  const dupeCheck = await env.VECTORS.query(embedding, {
-    topK: 1,
-    returnMetadata: 'all',
-  });
+  const dupeMatches = await adapter.vectorQuery(embedding, 1);
 
-  if (dupeCheck.matches?.length) {
-    const top = dupeCheck.matches[0];
+  if (dupeMatches.length) {
+    const top = dupeMatches[0];
     if (top.score > 0.92 && top.id !== input.key) {
       return textResult(
         `Similar memory already exists at key "${top.id}" (similarity: ${top.score.toFixed(3)}). ` +
@@ -605,9 +574,9 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
 
   // 1. D1 — source of truth. If this fails, nothing is stored anywhere.
   try {
-    await env.DB.prepare(
+    await adapter.query(
       `INSERT INTO memories (id, key, content, tags, importance, author, memory_type, created_at, updated_at, accessed_at, access_count)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
        ON CONFLICT (key) DO UPDATE SET
          content = excluded.content,
          tags = excluded.tags,
@@ -615,9 +584,8 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
          author = excluded.author,
          memory_type = excluded.memory_type,
          updated_at = excluded.updated_at`,
-    )
-      .bind(id, input.key, input.content, JSON.stringify(input.tags), input.importance, input.author, input.memory_type, now, now, now)
-      .run();
+      [id, input.key, input.content, JSON.stringify(input.tags), input.importance, input.author, input.memory_type, now, now, now],
+    );
   } catch (err) {
     console.error('[storeMemory] D1 upsert failed:', err instanceof Error ? err.message : err, { key: input.key });
     throw err;
@@ -628,11 +596,9 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
   //    this key, or can be rebuilt from D1 by a reindex job.
   let ftsOk = true;
   try {
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM memories_fts WHERE key = ?1').bind(input.key),
-      env.DB.prepare(
-        'INSERT INTO memories_fts (key, content, tags) VALUES (?1, ?2, ?3)',
-      ).bind(input.key, input.content, input.tags.join(' ')),
+    await adapter.batch([
+      { sql: 'DELETE FROM memories_fts WHERE key = ?', params: [input.key] },
+      { sql: 'INSERT INTO memories_fts (key, content, tags) VALUES (?, ?, ?)', params: [input.key, input.content, input.tags.join(' ')] },
     ]);
   } catch (err) {
     ftsOk = false;
@@ -645,18 +611,12 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
   //    cron and reindexed.
   let vecOk = true;
   try {
-    await env.VECTORS.upsert([
-      {
-        id: input.key,
-        values: embedding,
-        metadata: {
-          key: input.key,
-          tags: input.tags.join(','),
-          importance: input.importance,
-          author: input.author,
-        },
-      },
-    ]);
+    await adapter.vectorUpsert(input.key, embedding, {
+      key: input.key,
+      tags: input.tags.join(','),
+      importance: input.importance,
+      author: input.author,
+    });
   } catch (err) {
     vecOk = false;
     console.error('[storeMemory] Vectorize upsert failed (D1 row exists):', err instanceof Error ? err.message : err, { key: input.key });
@@ -676,33 +636,32 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
   //    either way; the +1 ensures we still get up to AUTO_LINK_TOP_K real neighbors.
   if (vecOk) {
     try {
-      const similar = await env.VECTORS.query(embedding, {
-        topK: AUTO_LINK_TOP_K + 1,
-        returnMetadata: 'all',
-      });
-      const edges = (similar.matches ?? [])
+      const similar = await adapter.vectorQuery(embedding, AUTO_LINK_TOP_K + 1);
+      const edges = similar
         .filter((m) => m.id !== input.key && m.score >= AUTO_LINK_THRESHOLD)
         .slice(0, AUTO_LINK_TOP_K);
 
       // Prune all existing edges for this key (both directions) before re-writing.
       // This keeps the graph accurate when content changes substantially.
       const pruneStmts = [
-        env.DB.prepare('DELETE FROM memory_relationships WHERE from_key = ?1').bind(input.key),
-        env.DB.prepare('DELETE FROM memory_relationships WHERE to_key = ?1').bind(input.key),
+        { sql: 'DELETE FROM memory_relationships WHERE from_key = ?', params: [input.key] },
+        { sql: 'DELETE FROM memory_relationships WHERE to_key = ?', params: [input.key] },
       ];
       const linkStmts = edges.flatMap((m) => [
-        env.DB.prepare(
-          `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
-           VALUES (?1, ?2, 'similar', ?3, ?4)
+        {
+          sql: `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
+           VALUES (?, ?, 'similar', ?, ?)
            ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
-        ).bind(input.key, m.id, m.score, now),
-        env.DB.prepare(
-          `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
-           VALUES (?1, ?2, 'similar', ?3, ?4)
+          params: [input.key, m.id, m.score, now],
+        },
+        {
+          sql: `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
+           VALUES (?, ?, 'similar', ?, ?)
            ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
-        ).bind(m.id, input.key, m.score, now),
+          params: [m.id, input.key, m.score, now],
+        },
       ]);
-      await env.DB.batch([...pruneStmts, ...linkStmts]);
+      await adapter.batch([...pruneStmts, ...linkStmts]);
     } catch (err) {
       console.error('[storeMemory] auto-link failed (non-fatal):', err instanceof Error ? err.message : err, { key: input.key });
     }
@@ -736,30 +695,20 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
   );
 }
 
-async function retrieveMemory(input: RetrieveMemoryInput, env: Env): Promise<McpToolResult> {
+async function retrieveMemory(input: RetrieveMemoryInput, adapter: RecallAdapter): Promise<McpToolResult> {
   const limit = input.limit ?? 5;
   const candidateCount = 20;
 
-  const queryEmbedding = await generateEmbedding(env.AI, input.query);
-
-  // Build Vectorize metadata filter
-  const filter: VectorizeVectorMetadataFilter = {};
-  if (input.min_importance !== undefined) {
-    filter.importance = { $gte: input.min_importance };
-  }
+  const queryEmbedding = await adapter.embed(input.query);
 
   // Run vector search and FTS5 keyword search in parallel
-  const [vectorResults, ftsKeys] = await Promise.all([
-    env.VECTORS.query(queryEmbedding, {
-      topK: Math.min(candidateCount * 2, 50),
-      filter: Object.keys(filter).length > 0 ? filter : undefined,
-      returnMetadata: 'all',
-    }),
-    ftsSearch(env.DB, input.query, candidateCount * 2),
+  const [vectorMatches, ftsKeys] = await Promise.all([
+    adapter.vectorQuery(queryEmbedding, Math.min(candidateCount * 2, 50)),
+    ftsSearch(adapter, input.query, candidateCount * 2),
   ]);
 
   // Reciprocal Rank Fusion — merge vector and keyword results
-  const vectorKeys = vectorResults.matches?.map((m) => m.id) ?? [];
+  const vectorKeys = vectorMatches.map((m) => m.id);
   const rrfScores = rrfMerge(vectorKeys, ftsKeys);
 
   if (rrfScores.size === 0) {
@@ -773,18 +722,22 @@ async function retrieveMemory(input: RetrieveMemoryInput, env: Env): Promise<Mcp
     .map(([key]) => key);
 
   // Fetch full content from D1
-  const placeholders = candidates.map((_, i) => `?${i + 1}`).join(',');
-  const rows = await env.DB.prepare(
+  const placeholders = candidates.map(() => '?').join(',');
+  const rows = await adapter.query<MemoryRow>(
     `SELECT * FROM memories WHERE key IN (${placeholders})`,
-  )
-    .bind(...candidates)
-    .all<MemoryRow>();
+    candidates,
+  );
 
-  if (!rows.results?.length) {
+  if (!rows.length) {
     return textResult('No memories found matching your query.');
   }
 
-  let memories = rows.results.map(rowToMemory);
+  let memories = rows.map(rowToMemory);
+
+  // Post-query importance filter
+  if (input.min_importance !== undefined) {
+    memories = memories.filter((m) => m.importance >= input.min_importance!);
+  }
 
   // Post-query tag filter
   if (input.tags?.length) {
@@ -796,7 +749,7 @@ async function retrieveMemory(input: RetrieveMemoryInput, env: Env): Promise<Mcp
   }
 
   // Rerank candidates for precision. Pass fusion scores for meaningful fallback on failure.
-  const reranked = await rerank(env.AI, input.query, memories, rrfScores);
+  const reranked = await rerankMemories(adapter, input.query, memories, rrfScores);
 
   // Combined scoring with tier-aware half-life recency decay.
   // episodic decays fast (half-life 7d), procedural barely decays (half-life 693d).
@@ -825,13 +778,12 @@ async function retrieveMemory(input: RetrieveMemoryInput, env: Env): Promise<Mcp
       const lastAccess = new Date(r.memory.accessed_at).getTime();
       return now - lastAccess > ACCESS_DEBOUNCE_MS;
     })
-    .map((r) =>
-      env.DB.prepare(
-        'UPDATE memories SET accessed_at = ?1, access_count = access_count + 1 WHERE key = ?2',
-      ).bind(nowIso, r.memory.key),
-    );
+    .map((r) => ({
+      sql: 'UPDATE memories SET accessed_at = ?, access_count = access_count + 1 WHERE key = ?',
+      params: [nowIso, r.memory.key],
+    }));
   if (accessUpdates.length) {
-    await env.DB.batch(accessUpdates);
+    await adapter.batch(accessUpdates);
   }
 
   const lines = topResults.map((r, i) => {
@@ -846,20 +798,18 @@ async function retrieveMemory(input: RetrieveMemoryInput, env: Env): Promise<Mcp
   return textResult(`Found ${topResults.length} relevant memories:\n\n${lines.join('\n\n')}`);
 }
 
-async function listMemories(input: ListMemoriesInput, env: Env): Promise<McpToolResult> {
+async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): Promise<McpToolResult> {
   const limit = input.limit ?? 50;
   const offset = input.offset ?? 0;
 
   let query = 'SELECT key, tags, importance, author, memory_type, created_at, updated_at, accessed_at, access_count FROM memories';
   let countQuery = 'SELECT COUNT(*) as total FROM memories';
   const conditions: string[] = [];
-  const bindings: string[] = [];
-  let idx = 1;
+  const bindings: unknown[] = [];
 
   if (input.author) {
-    conditions.push(`author = ?${idx}`);
+    conditions.push('author = ?');
     bindings.push(input.author);
-    idx++;
   }
 
   if (conditions.length) {
@@ -868,28 +818,23 @@ async function listMemories(input: ListMemoriesInput, env: Env): Promise<McpTool
     countQuery += where;
   }
   query += ' ORDER BY importance DESC, updated_at DESC';
-  query += ` LIMIT ?${idx} OFFSET ?${idx + 1}`;
-
-  const countStmt = env.DB.prepare(countQuery);
-  const dataStmt = env.DB.prepare(query);
+  query += ' LIMIT ? OFFSET ?';
 
   const countBindings = [...bindings];
-  const dataBindings = [...bindings, String(limit), String(offset)];
+  const dataBindings = [...bindings, limit, offset];
 
-  const [countResult, dataResult] = await Promise.all([
-    countBindings.length
-      ? countStmt.bind(...countBindings).first<{ total: number }>()
-      : countStmt.first<{ total: number }>(),
-    dataStmt.bind(...dataBindings).all<MemoryRow>(),
+  const [countRows, dataRows] = await Promise.all([
+    adapter.query<{ total: number }>(countQuery, countBindings),
+    adapter.query<MemoryRow>(query, dataBindings),
   ]);
 
-  const total = countResult?.total ?? 0;
+  const total = countRows[0]?.total ?? 0;
 
-  if (!dataResult.results?.length) {
+  if (!dataRows.length) {
     return textResult('No memories stored yet.');
   }
 
-  let items = dataResult.results.map((r) => ({
+  let items = dataRows.map((r) => ({
     key: r.key,
     tags: JSON.parse(r.tags) as string[],
     importance: r.importance,
@@ -918,21 +863,19 @@ async function listMemories(input: ListMemoriesInput, env: Env): Promise<McpTool
   return textResult(`${pageInfo} memories:\n\n${lines.join('\n')}`);
 }
 
-async function deleteMemory(input: DeleteMemoryInput, env: Env): Promise<McpToolResult> {
-  const existing = await env.DB.prepare('SELECT id FROM memories WHERE key = ?1')
-    .bind(input.key)
-    .first();
+async function deleteMemory(input: DeleteMemoryInput, adapter: RecallAdapter): Promise<McpToolResult> {
+  const existing = await adapter.query('SELECT id FROM memories WHERE key = ?', [input.key]);
 
-  if (!existing) {
+  if (!existing.length) {
     return textResult(`Memory "${input.key}" not found.`, true);
   }
 
   // Delete from D1 + FTS5 + relationships (all in same database, atomic via batch).
   try {
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM memories WHERE key = ?1').bind(input.key),
-      env.DB.prepare('DELETE FROM memories_fts WHERE key = ?1').bind(input.key),
-      env.DB.prepare('DELETE FROM memory_relationships WHERE from_key = ?1 OR to_key = ?1').bind(input.key),
+    await adapter.batch([
+      { sql: 'DELETE FROM memories WHERE key = ?', params: [input.key] },
+      { sql: 'DELETE FROM memories_fts WHERE key = ?', params: [input.key] },
+      { sql: 'DELETE FROM memory_relationships WHERE from_key = ? OR to_key = ?', params: [input.key, input.key] },
     ]);
   } catch (err) {
     console.error('[deleteMemory] D1/FTS5 delete failed:', err instanceof Error ? err.message : err, { key: input.key });
@@ -945,7 +888,7 @@ async function deleteMemory(input: DeleteMemoryInput, env: Env): Promise<McpTool
   // The weekly consolidation cron can be extended to detect and clean
   // these up.
   try {
-    await env.VECTORS.deleteByIds([input.key]);
+    await adapter.vectorDelete([input.key]);
   } catch (err) {
     console.error('[deleteMemory] Vectorize delete failed (D1 row already removed):', err instanceof Error ? err.message : err, { key: input.key });
     return textResult(
@@ -961,10 +904,10 @@ async function deleteMemory(input: DeleteMemoryInput, env: Env): Promise<McpTool
   return textResult(`Deleted memory "${input.key}".`);
 }
 
-async function clearMemories(_input: ClearMemoriesInput, env: Env): Promise<McpToolResult> {
+async function clearMemories(_input: ClearMemoriesInput, adapter: RecallAdapter): Promise<McpToolResult> {
   // Gate behind explicit opt-in. Default-deny protects users from a leaked key
   // wiping the entire store via a single tool call.
-  if (env.ALLOW_DESTRUCTIVE_TOOLS !== 'true') {
+  if (!adapter.isDestructiveAllowed()) {
     return textResult(
       'clear_memories is disabled. To enable it, set the ALLOW_DESTRUCTIVE_TOOLS ' +
         'secret to "true" via `wrangler secret put ALLOW_DESTRUCTIVE_TOOLS`. ' +
@@ -974,22 +917,22 @@ async function clearMemories(_input: ClearMemoriesInput, env: Env): Promise<McpT
     );
   }
 
-  const rows = await env.DB.prepare('SELECT key FROM memories').all<{ key: string }>();
+  const rows = await adapter.query<{ key: string }>('SELECT key FROM memories');
 
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM memories'),
-    env.DB.prepare('DELETE FROM memories_fts'),
-    env.DB.prepare('DELETE FROM memory_relationships'),
+  await adapter.batch([
+    { sql: 'DELETE FROM memories' },
+    { sql: 'DELETE FROM memories_fts' },
+    { sql: 'DELETE FROM memory_relationships' },
   ]);
 
   const failedBatches: Array<{ start: number; end: number; error: string }> = [];
-  if (rows.results?.length) {
-    const keys = rows.results.map((r) => r.key);
+  if (rows.length) {
+    const keys = rows.map((r) => r.key);
     const BATCH = 100;
     for (let i = 0; i < keys.length; i += BATCH) {
       const slice = keys.slice(i, i + BATCH);
       try {
-        await env.VECTORS.deleteByIds(slice);
+        await adapter.vectorDelete(slice);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         failedBatches.push({ start: i, end: i + slice.length, error: message });
@@ -1000,7 +943,7 @@ async function clearMemories(_input: ClearMemoriesInput, env: Env): Promise<McpT
     }
   }
 
-  const total = rows.results?.length ?? 0;
+  const total = rows.length;
   if (failedBatches.length > 0) {
     const orphanCount = failedBatches.reduce((sum, b) => sum + (b.end - b.start), 0);
     return textResult(
@@ -1015,12 +958,12 @@ async function clearMemories(_input: ClearMemoriesInput, env: Env): Promise<McpT
   return textResult(`Cleared all ${total} memories.`);
 }
 
-async function getRelatedMemories(input: GetRelatedMemoriesInput, env: Env): Promise<McpToolResult> {
+async function getRelatedMemories(input: GetRelatedMemoriesInput, adapter: RecallAdapter): Promise<McpToolResult> {
   const limit = input.limit ?? 10;
 
   // Distinguish "key doesn't exist" from "key has no relationships yet" — cheap D1 read.
-  const exists = await env.DB.prepare('SELECT 1 FROM memories WHERE key = ?1').bind(input.key).first();
-  if (!exists) {
+  const exists = await adapter.query('SELECT 1 FROM memories WHERE key = ?', [input.key]);
+  if (!exists.length) {
     return textResult(`Memory "${input.key}" not found.`, true);
   }
 
@@ -1029,21 +972,19 @@ async function getRelatedMemories(input: GetRelatedMemoriesInput, env: Env): Pro
            m.content, m.tags, m.importance, m.author, m.memory_type
     FROM memory_relationships r
     JOIN memories m ON m.key = r.to_key
-    WHERE r.from_key = ?1
+    WHERE r.from_key = ?
   `;
   const bindings: unknown[] = [input.key];
-  let idx = 2;
 
   if (input.relationship_type) {
-    query += ` AND r.relationship_type = ?${idx}`;
+    query += ' AND r.relationship_type = ?';
     bindings.push(input.relationship_type);
-    idx++;
   }
 
-  query += ` ORDER BY r.strength DESC LIMIT ?${idx}`;
+  query += ' ORDER BY r.strength DESC LIMIT ?';
   bindings.push(limit);
 
-  const rows = await env.DB.prepare(query).bind(...bindings).all<{
+  const rows = await adapter.query<{
     to_key: string;
     relationship_type: string;
     strength: number;
@@ -1053,13 +994,13 @@ async function getRelatedMemories(input: GetRelatedMemoriesInput, env: Env): Pro
     importance: number;
     author: string;
     memory_type: string;
-  }>();
+  }>(query, bindings);
 
-  if (!rows.results?.length) {
+  if (!rows.length) {
     return textResult(`No related memories found for "${input.key}".`);
   }
 
-  const lines = rows.results.map((r, i) => {
+  const lines = rows.map((r, i) => {
     const tags = JSON.parse(r.tags) as string[];
     return [
       `${i + 1}. **${r.to_key}** (${r.relationship_type}, strength: ${r.strength.toFixed(3)})`,
@@ -1068,7 +1009,7 @@ async function getRelatedMemories(input: GetRelatedMemoriesInput, env: Env): Pro
     ].join('\n');
   });
 
-  return textResult(`Found ${rows.results.length} related memories for "${input.key}":\n\n${lines.join('\n\n')}`);
+  return textResult(`Found ${rows.length} related memories for "${input.key}":\n\n${lines.join('\n\n')}`);
 }
 
 // ─── Consolidation (read-only analysis) ──────────────────────────
@@ -1086,34 +1027,12 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-async function batchGenerateEmbeddings(
-  ai: Ai,
-  texts: string[],
-): Promise<number[][]> {
-  const BATCH_SIZE = 20;
-  const results: number[][] = [];
-
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE);
-    const result = await ai.run('@cf/baai/bge-m3', { text: batch });
-    const data = result as unknown as { data: number[][] };
-    if (data?.data) {
-      results.push(...data.data);
-    } else {
-      // Fill with empty arrays so indices stay aligned
-      results.push(...batch.map(() => []));
-    }
-  }
-
-  return results;
-}
-
 /**
  * Run a read-only consolidation analysis and return the report text.
  * Exported so the cron handler can call it directly.
  */
 export async function runConsolidationReport(
-  env: Env,
+  adapter: RecallAdapter,
   options?: ConsolidateMemoriesInput,
 ): Promise<string> {
   const similarityThreshold = options?.similarity_threshold ?? 0.82;
@@ -1121,17 +1040,16 @@ export async function runConsolidationReport(
   const maxMemories = options?.max_memories ?? 200;
 
   // 1. Fetch memories (skip system reports from previous consolidations)
-  const allRows = await env.DB.prepare(
-    `SELECT * FROM memories WHERE key NOT LIKE '_system.%' ORDER BY importance DESC LIMIT ?1`,
-  )
-    .bind(maxMemories)
-    .all<MemoryRow>();
+  const allRows = await adapter.query<MemoryRow>(
+    `SELECT * FROM memories WHERE key NOT LIKE '_system.%' ORDER BY importance DESC LIMIT ?`,
+    [maxMemories],
+  );
 
-  if (!allRows.results?.length) {
+  if (!allRows.length) {
     return '## Memory Consolidation Report\n\nNo memories to analyze.';
   }
 
-  const memories = allRows.results.map(rowToMemory);
+  const memories = allRows.map(rowToMemory);
 
   // 2. Find stale memories (cheap — D1 only, no AI calls)
   const now = Date.now();
@@ -1149,11 +1067,17 @@ export async function runConsolidationReport(
       importance: m.importance,
     }));
 
-  // 3. Generate embeddings in batches for similarity analysis
-  const embeddings = await batchGenerateEmbeddings(
-    env.AI,
-    memories.map((m) => m.content),
-  );
+  // 3. Generate embeddings sequentially for similarity analysis
+  const embeddings: number[][] = [];
+  for (const m of memories) {
+    try {
+      const vec = await adapter.embed(m.content);
+      embeddings.push(vec);
+    } catch {
+      // Fill with empty array so indices stay aligned
+      embeddings.push([]);
+    }
+  }
 
   // 4. Pairwise cosine similarity — find pairs in the target band
   //    Below threshold: not similar enough. Above 0.92: already caught by dedup guard.
@@ -1248,8 +1172,8 @@ export async function runConsolidationReport(
 
 async function consolidateMemories(
   input: ConsolidateMemoriesInput,
-  env: Env,
+  adapter: RecallAdapter,
 ): Promise<McpToolResult> {
-  const report = await runConsolidationReport(env, input);
+  const report = await runConsolidationReport(adapter, input);
   return textResult(report);
 }
