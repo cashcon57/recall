@@ -1,6 +1,7 @@
 import { verifyApiKey } from './auth';
 import { handleMcpRequest, parseJsonRpc } from './mcp';
 import { runConsolidationReport } from './tools';
+import { CloudflareAdapter } from './adapters/cloudflare';
 import type { Env, JsonRpcResponse } from './types';
 
 // ─── Constants ──────────────────────────────────────────────────────
@@ -277,54 +278,33 @@ async function readBodyWithLimit(request: Request, maxBytes: number): Promise<st
 // ─── Scheduled consolidation ───────────────────────────────────────
 
 async function runScheduledConsolidation(env: Env): Promise<void> {
-  const now = new Date().toISOString();
+  const adapter = new CloudflareAdapter(env);
   const reportKey = '_system.consolidation-report';
 
   try {
-    const report = await runConsolidationReport(env);
+    const report = await runConsolidationReport(adapter);
 
-    // Generate embedding so the report is searchable via retrieve_memory
-    const aiResult = await env.AI.run('@cf/baai/bge-m3', { text: [report] });
-    const embeddingData = aiResult as unknown as { data: number[][] };
-    const embedding = embeddingData?.data?.[0];
-
+    const embedding = await adapter.embed(report);
     const id = crypto.randomUUID();
+    const now = new Date().toISOString();
     const tags = JSON.stringify(['_system', 'consolidation']);
 
-    // Upsert report into D1
-    await env.DB.prepare(
-      `INSERT INTO memories (id, key, content, tags, importance, author, created_at, updated_at, accessed_at, access_count)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
-       ON CONFLICT (key) DO UPDATE SET
-         content = excluded.content,
-         tags = excluded.tags,
-         updated_at = excluded.updated_at`,
-    )
-      .bind(id, reportKey, report, tags, 0.3, 'system-cron', now, now, now)
-      .run();
-
-    // Sync FTS5
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM memories_fts WHERE key = ?1').bind(reportKey),
-      env.DB.prepare(
-        'INSERT INTO memories_fts (key, content, tags) VALUES (?1, ?2, ?3)',
-      ).bind(reportKey, report, '_system consolidation'),
+    await adapter.batch([
+      {
+        sql: `INSERT INTO memories (id, key, content, tags, importance, author, memory_type, created_at, updated_at, accessed_at, access_count) VALUES (?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT (key) DO UPDATE SET content=excluded.content, tags=excluded.tags, updated_at=excluded.updated_at`,
+        params: [id, reportKey, report, tags, 0.3, 'system-cron', 'semantic', now, now, now],
+      },
     ]);
 
-    // Sync Vectorize (only if embedding succeeded)
-    if (embedding?.length) {
-      await env.VECTORS.upsert([
-        {
-          id: reportKey,
-          values: embedding,
-          metadata: {
-            key: reportKey,
-            tags: '_system,consolidation',
-            importance: 0.3,
-            author: 'system-cron',
-          },
-        },
-      ]);
+    await adapter.ftsUpsert(reportKey, report, '_system consolidation');
+
+    if (embedding.length) {
+      await adapter.vectorUpsert(reportKey, embedding, {
+        key: reportKey,
+        tags: '_system,consolidation',
+        importance: 0.3,
+        author: 'system-cron',
+      });
     }
 
     console.log(`[consolidation] Report stored at ${now}`);

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "recall": {
+      "url": "https://recall.<your-subdomain>.workers.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-MEMORY_API_KEY>"
+      }
+    }
+  }
+}

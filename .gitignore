@@ -7,6 +7,9 @@ dist/
 .cache/
 *.tsbuildinfo
 
+# Stray tsc output in shared src/ (local/docker builds use rootDir="..")
+src/**/*.js
+
 # Local config (contains database_id after setup)
 wrangler.toml
 wrangler.toml.bak
@@ -16,6 +19,11 @@ wrangler.toml.bak
 .dev.vars
 *.key
 .recall-api-key
+
+# sqlite-vec native extension (platform-specific binary, download separately)
+local/sqlite-vec.dylib
+local/sqlite-vec.so
+local/sqlite-vec.dll
 
 # OS
 .DS_Store
