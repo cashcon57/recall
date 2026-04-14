@@ -1,0 +1,21 @@
+{
+  "name": "recall-local",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/local/src/server.js",
+  "scripts": {
+    "build": "tsc && node fix-imports.mjs",
+    "start": "node dist/local/src/server.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.3.0",
+    "better-sqlite3": "^12.9.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240405.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -17,6 +17,11 @@ wrangler.toml.bak
 *.key
 .recall-api-key
 
+# sqlite-vec native extension (platform-specific binary, download separately)
+local/sqlite-vec.dylib
+local/sqlite-vec.so
+local/sqlite-vec.dll
+
 # OS
 .DS_Store
 Thumbs.db
