@@ -4,43 +4,69 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](./tsconfig.json)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com)
-[![MCP](https://img.shields.io/badge/MCP-2025--03--26-000000)](https://modelcontextprotocol.io)
-[![Deploy](https://img.shields.io/badge/Deploy-1%20command-brightgreen)](#quickstart-5-minutes)
+[![MCP](https://img.shields.io/badge/MCP-2025--06--18-000000)](https://modelcontextprotocol.io)
+[![Backends](https://img.shields.io/badge/Backends-3-brightgreen)](#deployment-options)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/cash508287)
 
-**A self-hosted MCP memory server with hybrid semantic + keyword search, running on Cloudflare Workers.**
+**A self-hosted MCP memory server with hybrid semantic + keyword search. Deploy to Cloudflare Workers, run locally without any cloud dependencies, or self-host with Docker.**
 
 > Not affiliated with Microsoft Windows Recall. This is an open-source memory server for AI coding assistants (Claude Code, Cursor, Windsurf, Cline, Claude Desktop, anything speaking MCP).
-
-> **Currently Cloudflare-only.** A Docker-based self-hosted path (Postgres + pgvector + local embeddings, no Cloudflare required) is in the works and will ship in a later release. [PRs welcome](#contributing) if you want to help get it out sooner — see the [FAQ](#faq) for the reasoning behind the current architecture.
 
 Give Claude, Cursor, Windsurf, or any MCP-compatible client a persistent memory that survives across sessions, projects, and devices. No SaaS, no per-token fees, no data leaving your infrastructure. Your Cloudflare account, your data, your rules.
 
 **Who is this for?** Developers using AI coding assistants who are tired of re-explaining context every session. Teams who want a shared knowledge pool their agents can actually use. Anyone who wants memory without paying a subscription or shipping prompts to a third party.
 
 ```mermaid
-flowchart LR
-    Client["MCP Client<br/>(Claude / Cursor /<br/>Windsurf)"]
-    subgraph Worker["Cloudflare Worker"]
-        direction TB
-        Auth["HMAC Bearer auth<br/>Rate limit"]
-        Vec["Vector search<br/>(bge-m3, 1024D)"]
-        BM25["Keyword search<br/>(FTS5 BM25)"]
-        RRF["Reciprocal Rank Fusion"]
-        Rerank["Cross-encoder rerank<br/>(bge-reranker-base)"]
-        Decay["Recency decay<br/>+ importance"]
-        Auth --> Vec
-        Auth --> BM25
-        Vec --> RRF
-        BM25 --> RRF
-        RRF --> Rerank
-        Rerank --> Decay
+flowchart TD
+    subgraph Clients
+        CC["Claude Code / Codex\n/ Cursor / Windsurf"]
     end
-    Storage[("D1 SQLite<br/>Vectorize<br/>Workers AI")]
 
-    Client <-->|HTTPS + JSON-RPC| Worker
-    Worker <--> Storage
+    subgraph CF["☁️  Cloudflare Workers"]
+        CFW["Worker"]
+        D1[("D1 SQLite")]
+        VEC[("Vectorize 1024D\nbge-m3")]
+        WAI["Workers AI"]
+        CFW --> D1
+        CFW --> VEC
+        CFW --> WAI
+    end
+
+    subgraph Local["💻  Local stdio (no cloud)"]
+        LST["stdio server"]
+        LSQL[("SQLite +\nsqlite-vec 768D")]
+        LEMB["HF Transformers\nbge-base-en-v1.5"]
+        LST --> LSQL
+        LST --> LEMB
+    end
+
+    subgraph Docker["🐳  Docker HTTP"]
+        DSV["HTTP server"]
+        PG[("Postgres +\npgvector 768D")]
+        DEMB["HF Transformers\nbge-base-en-v1.5"]
+        DSV --> PG
+        DSV --> DEMB
+    end
+
+    CC -->|"HTTP /mcp"| CF
+    CC -->|"stdio"| Local
+    CC -->|"HTTP :8788"| Docker
 ```
+
+## Deployment Options
+
+Three backends. Same tool surface. Choose what fits your infra:
+
+| | Cloudflare Workers | Local stdio | Docker HTTP |
+|---|---|---|---|
+| **Infrastructure** | CF D1 + Vectorize + Workers AI | SQLite + sqlite-vec | Postgres + pgvector |
+| **Embeddings** | bge-m3, 1024D | bge-base-en-v1.5, 768D | bge-base-en-v1.5, 768D |
+| **Internet required** | Yes | No | No |
+| **MCP transport** | HTTP | stdio | HTTP |
+| **Cost** | Free tier | Free | Free |
+| **Best for** | Production, team sharing | Offline, privacy-first | Self-hosted server |
+
+> ⚠️ **Memories are NOT portable between backends.** Cloudflare uses 1024D vectors (bge-m3); local and Docker use 768D (bge-base-en-v1.5). These are different vector spaces — embeddings from one backend cannot be used in another.
 
 ## Why Recall?
 
@@ -68,7 +94,7 @@ Most MCP memory servers do one of two things: dump text into SQLite with cosine 
 | Deploy complexity        | docker | docker | docker | 1 command |
 | Monthly cost (personal)  |  $0–$  |  $0–$  |  $0–$  |   $0   |
 
-## Quickstart (5 minutes)
+## Quickstart — Cloudflare Workers
 
 ### Prerequisites
 
@@ -110,6 +136,98 @@ cd recall
 6. Write the API key to a `chmod 600` file (`.recall-api-key`) so it doesn't land in your terminal scrollback
 
 **Retrieve the key with** `cat .recall-api-key`, move it into a secret manager, then `rm .recall-api-key`.
+
+## Quickstart — Local stdio
+
+No Cloudflare account needed. Runs fully offline after the first model download.
+
+### Prerequisites
+
+- Node.js 20+
+- The `sqlite-vec` native extension for your platform ([releases](https://github.com/asg017/sqlite-vec/releases))
+
+### Steps
+
+```bash
+# 1. Clone and enter the local directory
+git clone https://github.com/cashcon57/recall && cd recall/local
+
+# 2. Install dependencies
+npm install
+
+# 3. Build
+npm run build
+
+# 4. Download sqlite-vec extension for your platform
+# macOS (Apple Silicon):
+curl -L https://github.com/asg017/sqlite-vec/releases/latest/download/sqlite-vec-macos-arm64.tar.gz | tar xz
+# macOS (Intel):
+# curl -L https://github.com/asg017/sqlite-vec/releases/latest/download/sqlite-vec-macos-x86_64.tar.gz | tar xz
+# Linux (x86_64):
+# curl -L https://github.com/asg017/sqlite-vec/releases/latest/download/sqlite-vec-linux-x86_64.tar.gz | tar xz
+
+# 5. Test
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}' | \
+  RECALL_DB_PATH=~/.recall/recall.db node dist/local/src/server.js
+```
+
+Add to your MCP client config (copy from `examples/mcp-config-local.json`):
+
+```json
+{
+  "mcpServers": {
+    "recall-local": {
+      "command": "node",
+      "args": ["/absolute/path/to/recall/local/dist/local/src/server.js"],
+      "env": {
+        "RECALL_DB_PATH": "/Users/<you>/.recall/recall.db",
+        "SQLITE_VEC_PATH": "/absolute/path/to/recall/local/sqlite-vec.dylib"
+      }
+    }
+  }
+}
+```
+
+> **Note:** The first `retrieve_memory` or `store_memory` call downloads the bge-base-en-v1.5 model (~200MB) from HuggingFace. Subsequent calls use the local cache.
+
+
+## Quickstart — Docker
+
+No Cloudflare account needed. Requires Docker and Docker Compose.
+
+```bash
+# 1. Clone
+git clone https://github.com/cashcon57/recall && cd recall
+
+# 2. Start Postgres + Recall server
+cd docker
+MEMORY_API_KEY=your-secret-key docker compose up -d
+
+# 3. Verify
+curl -s -X POST http://localhost:8788 \
+  -H "Authorization: Bearer your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | jq '.result.tools | length'
+# Expected: 7
+
+# 4. Tear down (keeps data in pgdata volume)
+docker compose down
+```
+
+Add to your MCP client config (copy from `examples/mcp-config-docker.json`):
+
+```json
+{
+  "mcpServers": {
+    "recall-docker": {
+      "url": "http://localhost:8788",
+      "headers": {
+        "Authorization": "Bearer your-secret-key"
+      }
+    }
+  }
+}
+```
 
 ## Add to your MCP client
 
@@ -179,6 +297,20 @@ custom_domain = true
 ```
 
 **Step 3 — Redeploy:** `npx wrangler deploy`. Cloudflare issues the TLS cert automatically.
+
+## Claude Code vs Codex
+
+Recall supports both Claude Code and Codex CLI. The session-start instructions differ slightly:
+
+| Feature | Claude Code | Codex |
+|---|---|---|
+| Session instructions | `initialize` response `instructions` field | `AGENTS.md` in project root |
+| Session config | `examples/CLAUDE.md` → copy to your project | `examples/AGENTS.md` → copy to your project |
+| Context preservation | `examples/recall-precompact.sh` (PreCompact hook) | Manual — call `store_memory` before session ends |
+| MCP config | `.mcp.json` with `mcpServers` | `.mcp.json` with `mcpServers` |
+| Recommended backend | Any | CF Workers or Docker (HTTP transport) |
+
+**Codex setup:** Copy `examples/AGENTS.md` to your project root (or append to your existing `AGENTS.md`).
 
 ## See it in action
 
@@ -417,6 +549,14 @@ See [`SETUP_PROMPTS.md`](./SETUP_PROMPTS.md) for additional prompts covering dep
 Runs every Sunday at 03:00 UTC by default (`0 3 * * SUN`). Scans up to 200 memories, finds pairs above `similarity_threshold` (default 0.82) and entries with zero accesses older than `stale_days` (default 60). Stores a markdown report as a searchable memory under the key `_system.consolidation-report`. **Never modifies or deletes memories automatically** — the report is a recommendation for humans or agents to act on.
 
 Tune the schedule in [`wrangler.toml.example`](./wrangler.toml.example) `[triggers]` section.
+
+### Backends
+
+All three backends implement the same `RecallAdapter` interface (`src/adapter.ts`), exposing identical MCP tool surfaces. The differences are infrastructure and embedding model:
+
+- **CloudflareAdapter** (`src/adapters/cloudflare.ts`) — wraps D1, Vectorize, Workers AI
+- **LocalAdapter** (`local/src/adapter.ts`) — wraps better-sqlite3, sqlite-vec, HuggingFace Transformers
+- **DockerAdapter** (`docker/src/adapter.ts`) — wraps Postgres/pgvector, HuggingFace Transformers
 
 ## Security
 
