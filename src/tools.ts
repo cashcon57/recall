@@ -340,8 +340,8 @@ function validateClearInput(args: Record<string, unknown>): ClearMemoriesInput {
 }
 
 function validateGetRelatedInput(args: Record<string, unknown>): GetRelatedMemoriesInput {
-  if (typeof args.key !== 'string' || args.key.length === 0) {
-    throw new Error('key must be a non-empty string');
+  if (typeof args.key !== 'string' || args.key.length === 0 || args.key.length > MAX_KEY_LEN) {
+    throw new Error(`key must be a non-empty string (max ${MAX_KEY_LEN} chars)`);
   }
   const result: GetRelatedMemoriesInput = { key: args.key.trim() };
   if (args.relationship_type !== undefined) {
@@ -395,6 +395,12 @@ const HALF_LIFE_HOURS: Record<string, number> = {
   semantic:   69 * 24,  // 1656h
   procedural: 693 * 24, // 16632h
 };
+
+// Auto-link: similarity threshold and max neighbors for relationship graph.
+// Threshold matches consolidation default (0.82) — pairs above it get edges,
+// not merge suggestions. Separate purposes, same cutoff is intentional.
+const AUTO_LINK_THRESHOLD = 0.82;
+const AUTO_LINK_TOP_K = 5;
 
 async function generateEmbedding(ai: Ai, text: string): Promise<number[]> {
   const result = await ai.run('@cf/baai/bge-m3', {
@@ -660,32 +666,43 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
   //    Reuses the already-computed embedding — zero extra AI calls.
   //    Non-fatal — failure is logged but does not unwind the store.
   //    Both A→B and B→A are stored so get_related_memories only needs WHERE from_key = ?.
+  //
+  //    On update: stale edges from prior content are pruned before new edges are written,
+  //    so the graph stays accurate even when a memory's content changes significantly.
+  //
+  //    Note: topK is AUTO_LINK_TOP_K + 1 as a buffer. Vectorize has eventual-consistency
+  //    propagation — a freshly upserted vector may not be visible yet, so the self-match
+  //    is not guaranteed. The application-level filter (`m.id !== input.key`) handles it
+  //    either way; the +1 ensures we still get up to AUTO_LINK_TOP_K real neighbors.
   if (vecOk) {
     try {
-      const AUTO_LINK_TOP_K = 5;
-      const AUTO_LINK_THRESHOLD = 0.82;
       const similar = await env.VECTORS.query(embedding, {
-        topK: AUTO_LINK_TOP_K + 1, // +1 to account for self-match
+        topK: AUTO_LINK_TOP_K + 1,
         returnMetadata: 'all',
       });
       const edges = (similar.matches ?? [])
         .filter((m) => m.id !== input.key && m.score >= AUTO_LINK_THRESHOLD)
         .slice(0, AUTO_LINK_TOP_K);
-      if (edges.length > 0) {
-        const linkStmts = edges.flatMap((m) => [
-          env.DB.prepare(
-            `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
-             VALUES (?1, ?2, 'similar', ?3, ?4)
-             ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
-          ).bind(input.key, m.id, m.score, now),
-          env.DB.prepare(
-            `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
-             VALUES (?1, ?2, 'similar', ?3, ?4)
-             ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
-          ).bind(m.id, input.key, m.score, now),
-        ]);
-        await env.DB.batch(linkStmts);
-      }
+
+      // Prune all existing edges for this key (both directions) before re-writing.
+      // This keeps the graph accurate when content changes substantially.
+      const pruneStmts = [
+        env.DB.prepare('DELETE FROM memory_relationships WHERE from_key = ?1').bind(input.key),
+        env.DB.prepare('DELETE FROM memory_relationships WHERE to_key = ?1').bind(input.key),
+      ];
+      const linkStmts = edges.flatMap((m) => [
+        env.DB.prepare(
+          `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
+           VALUES (?1, ?2, 'similar', ?3, ?4)
+           ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
+        ).bind(input.key, m.id, m.score, now),
+        env.DB.prepare(
+          `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
+           VALUES (?1, ?2, 'similar', ?3, ?4)
+           ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
+        ).bind(m.id, input.key, m.score, now),
+      ]);
+      await env.DB.batch([...pruneStmts, ...linkStmts]);
     } catch (err) {
       console.error('[storeMemory] auto-link failed (non-fatal):', err instanceof Error ? err.message : err, { key: input.key });
     }
@@ -833,7 +850,7 @@ async function listMemories(input: ListMemoriesInput, env: Env): Promise<McpTool
   const limit = input.limit ?? 50;
   const offset = input.offset ?? 0;
 
-  let query = 'SELECT key, tags, importance, author, created_at, updated_at, accessed_at, access_count FROM memories';
+  let query = 'SELECT key, tags, importance, author, memory_type, created_at, updated_at, accessed_at, access_count FROM memories';
   let countQuery = 'SELECT COUNT(*) as total FROM memories';
   const conditions: string[] = [];
   const bindings: string[] = [];
@@ -877,6 +894,7 @@ async function listMemories(input: ListMemoriesInput, env: Env): Promise<McpTool
     tags: JSON.parse(r.tags) as string[],
     importance: r.importance,
     author: r.author,
+    memory_type: r.memory_type,
     updated_at: r.updated_at,
     access_count: r.access_count,
   }));
@@ -892,7 +910,7 @@ async function listMemories(input: ListMemoriesInput, env: Env): Promise<McpTool
 
   const lines = items.map(
     (m) =>
-      `- **${m.key}** [${m.importance}] by ${m.author} — tags: ${m.tags.join(', ') || 'none'} (updated: ${m.updated_at}, accessed: ${m.access_count}x)`,
+      `- **${m.key}** [${m.importance}] ${m.memory_type} by ${m.author} — tags: ${m.tags.join(', ') || 'none'} (updated: ${m.updated_at}, accessed: ${m.access_count}x)`,
   );
 
   const pageInfo = `Showing ${offset + 1}–${offset + items.length} of ${total}`;
@@ -999,6 +1017,12 @@ async function clearMemories(_input: ClearMemoriesInput, env: Env): Promise<McpT
 
 async function getRelatedMemories(input: GetRelatedMemoriesInput, env: Env): Promise<McpToolResult> {
   const limit = input.limit ?? 10;
+
+  // Distinguish "key doesn't exist" from "key has no relationships yet" — cheap D1 read.
+  const exists = await env.DB.prepare('SELECT 1 FROM memories WHERE key = ?1').bind(input.key).first();
+  if (!exists) {
+    return textResult(`Memory "${input.key}" not found.`, true);
+  }
 
   let query = `
     SELECT r.to_key, r.relationship_type, r.strength, r.created_at,
