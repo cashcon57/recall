@@ -36,6 +36,9 @@ const server = createServer(async (req, res) => {
   }
 
   let body = '';
+  req.on('error', (_err) => {
+    if (!res.headersSent) { res.writeHead(400); res.end(); }
+  });
   req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
   req.on('end', async () => {
     try {
@@ -43,8 +46,8 @@ const server = createServer(async (req, res) => {
 
       if (Array.isArray(parsed)) {
         const responses = [];
-        for (const req of parsed) {
-          const resp = await handleMcpRequestWithAdapter(req, adapter);
+        for (const rpcReq of parsed) {
+          const resp = await handleMcpRequestWithAdapter(rpcReq, adapter);
           if (resp) responses.push(resp);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });

@@ -29,7 +29,17 @@ export class DockerAdapter implements RecallAdapter {
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
     const pgSql = toPostgresParams(sql);
     const result = await this.pool.query(pgSql, params);
-    return result.rows as T[];
+    return result.rows.map((row) => {
+      const normalized: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(row)) {
+        // Re-serialize JSONB values (arrays/objects) that pg auto-parses,
+        // so shared tools.ts code (written for D1 string columns) can JSON.parse() them.
+        normalized[k] = (Array.isArray(v) || (v !== null && typeof v === 'object' && !(v instanceof Date)))
+          ? JSON.stringify(v)
+          : v;
+      }
+      return normalized as T;
+    }) as T[];
   }
 
   async batch(statements: Array<{ sql: string; params?: unknown[] }>): Promise<void> {
