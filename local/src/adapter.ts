@@ -1,13 +1,10 @@
 // local/src/adapter.ts
 import Database from 'better-sqlite3';
-import { pipeline, env as hfEnv } from '@huggingface/transformers';
+import { pipeline } from '@huggingface/transformers';
 import type { RecallAdapter, VectorMatch } from '../../src/adapter.js';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-
-// Suppress HF download progress — would pollute the stdio MCP stream
-hfEnv.allowLocalModels = false;
 
 const EMBED_MODEL = 'Xenova/bge-base-en-v1.5';
 const EMBED_DIM = 768;
@@ -94,8 +91,8 @@ export class LocalAdapter implements RecallAdapter {
     // sqlite-vec KNN query: ORDER BY distance returns L2 distance
     const vecJson = JSON.stringify(values);
     const rows = this.db.prepare(
-      `SELECT key, distance FROM vec_memories WHERE embedding MATCH ? ORDER BY distance LIMIT ?`
-    ).all(vecJson, topK) as Array<{ key: string; distance: number }>;
+      `SELECT key, distance FROM vec_memories WHERE embedding MATCH ? AND k = ? ORDER BY distance LIMIT ?`
+    ).all(vecJson, topK, topK) as Array<{ key: string; distance: number }>;
 
     // Convert L2 distance to cosine-like similarity score (0-1)
     return rows.map((r) => ({ id: r.key, score: 1 / (1 + r.distance) }));
