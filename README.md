@@ -48,7 +48,8 @@ Most MCP memory servers do one of two things: dump text into SQLite with cosine 
 
 - **Hybrid search** — Vector similarity (bge-m3, 1024D) + BM25 full-text search, fused via Reciprocal Rank Fusion. Catches both semantic paraphrases and exact keyword matches.
 - **Cross-encoder reranking** — Final candidates run through bge-reranker-base for precision. Content is truncated before reranking to keep AI token usage low.
-- **Recency-weighted** — Fresh memories outrank stale ones via exponential decay, so your memory doesn't become a graveyard.
+- **Tiered recency decay** — Three memory tiers with biological half-lives: `episodic` (7d, session events), `semantic` (69d, facts/concepts), `procedural` (693d, stable rules/credentials). Episodic context ages out fast; architecture decisions stay relevant for years. Tier design inspired by [NornicDB](https://github.com/orneryd/NornicDB).
+- **Auto-relationship graph** — Memories with embedding similarity > 0.82 are automatically linked on store. Traverse with `get_related_memories` to find contextually adjacent knowledge without re-querying.
 - **Deduplication guard** — Refuses to store memories with > 0.92 cosine similarity to existing entries under different keys.
 - **Weekly consolidation** — A scheduled cron analyzes the store for near-duplicates and stale entries, writing a searchable report back into memory.
 - **Hardened by default** — 1 MB body cap, constant-time HMAC auth, SHA-256 hashed rate-limit buckets, destructive tools default-disabled, weak-key warnings.

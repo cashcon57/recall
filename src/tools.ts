@@ -2,6 +2,7 @@ import type {
   Env,
   Memory,
   MemoryRow,
+  MemoryType,
   McpToolDefinition,
   McpToolResult,
   StoreMemoryInput,
@@ -10,6 +11,7 @@ import type {
   DeleteMemoryInput,
   ClearMemoriesInput,
   ConsolidateMemoriesInput,
+  GetRelatedMemoriesInput,
 } from './types';
 
 // ─── Tool definitions (exposed via tools/list) ─────────────────────
@@ -48,6 +50,12 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
           type: 'string',
           description:
             'Who created this memory, e.g. "cash", "andrew", "claude"',
+        },
+        memory_type: {
+          type: 'string',
+          enum: ['episodic', 'semantic', 'procedural'],
+          description:
+            'Memory tier controlling recency decay half-life. episodic = 7d (events, session context), semantic = 69d (concepts, facts — default), procedural = 693d (stable rules, patterns, credentials).',
         },
       },
       required: ['key', 'content', 'author'],
@@ -165,6 +173,31 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
       },
     },
   },
+  {
+    name: 'get_related_memories',
+    description:
+      'Traverse the memory relationship graph. Returns memories that are related to the given key, ordered by relationship strength. Relationships are auto-created on store_memory via embedding similarity (threshold 0.82).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: {
+          type: 'string',
+          description: 'The memory key to find related memories for',
+        },
+        relationship_type: {
+          type: 'string',
+          description: 'Filter by relationship type (default: all types). Currently only "similar" is auto-generated.',
+        },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          maximum: 20,
+          description: 'Max related memories to return (default 10)',
+        },
+      },
+      required: ['key'],
+    },
+  },
 ];
 
 // ─── Input validation ───────────────────────────────────────────────
@@ -177,8 +210,10 @@ const MAX_TAG_LEN = 64;
 const MAX_TAGS = 20;
 const MAX_QUERY_LEN = 1000;
 
+const VALID_MEMORY_TYPES = new Set<MemoryType>(['episodic', 'semantic', 'procedural']);
+
 function validateStoreInput(args: Record<string, unknown>): StoreMemoryInput {
-  const { key, content, tags, importance, author } = args;
+  const { key, content, tags, importance, author, memory_type } = args;
 
   if (typeof key !== 'string' || key.length === 0 || key.length > MAX_KEY_LEN) {
     throw new Error(`key must be a non-empty string (max ${MAX_KEY_LEN} chars)`);
@@ -215,12 +250,21 @@ function validateStoreInput(args: Record<string, unknown>): StoreMemoryInput {
     validatedImportance = Math.round(importance * 100) / 100;
   }
 
+  let validatedMemoryType: MemoryType = 'semantic';
+  if (memory_type !== undefined) {
+    if (!VALID_MEMORY_TYPES.has(memory_type as MemoryType)) {
+      throw new Error('memory_type must be "episodic", "semantic", or "procedural"');
+    }
+    validatedMemoryType = memory_type as MemoryType;
+  }
+
   return {
     key: key.trim(),
     content: content.trim(),
     tags: validatedTags,
     importance: validatedImportance,
     author: author.trim(),
+    memory_type: validatedMemoryType,
   };
 }
 
@@ -295,6 +339,24 @@ function validateClearInput(args: Record<string, unknown>): ClearMemoriesInput {
   return { confirm: true };
 }
 
+function validateGetRelatedInput(args: Record<string, unknown>): GetRelatedMemoriesInput {
+  if (typeof args.key !== 'string' || args.key.length === 0) {
+    throw new Error('key must be a non-empty string');
+  }
+  const result: GetRelatedMemoriesInput = { key: args.key.trim() };
+  if (args.relationship_type !== undefined) {
+    if (typeof args.relationship_type !== 'string') throw new Error('relationship_type must be a string');
+    result.relationship_type = args.relationship_type.trim();
+  }
+  if (args.limit !== undefined) {
+    if (typeof args.limit !== 'number' || args.limit < 1 || args.limit > 20 || !Number.isInteger(args.limit)) {
+      throw new Error('limit must be an integer between 1 and 20');
+    }
+    result.limit = args.limit;
+  }
+  return result;
+}
+
 function validateConsolidateInput(args: Record<string, unknown>): ConsolidateMemoriesInput {
   const result: ConsolidateMemoriesInput = {};
 
@@ -323,6 +385,16 @@ function validateConsolidateInput(args: Record<string, unknown>): ConsolidateMem
 // ─── Helpers ────────────────────────────────────────────────────────
 
 const EMBEDDING_DIM = 1024; // bge-m3 is 1024-dimensional
+
+// Half-life decay per memory tier (NornicDB-inspired).
+// episodic = 7d (session context, events), semantic = 69d (concepts, facts),
+// procedural = 693d (stable rules, credentials, architecture).
+// recencyScore = 2^(-hoursSinceAccess / halfLife) → 0.5 at exactly one half-life.
+const HALF_LIFE_HOURS: Record<string, number> = {
+  episodic:   7 * 24,   // 168h
+  semantic:   69 * 24,  // 1656h
+  procedural: 693 * 24, // 16632h
+};
 
 async function generateEmbedding(ai: Ai, text: string): Promise<number[]> {
   const result = await ai.run('@cf/baai/bge-m3', {
@@ -476,6 +548,8 @@ export async function executeTool(
       return clearMemories(validateClearInput(args), env);
     case 'consolidate_memories':
       return consolidateMemories(validateConsolidateInput(args), env);
+    case 'get_related_memories':
+      return getRelatedMemories(validateGetRelatedInput(args), env);
     default:
       return textResult(`Unknown tool: ${name}`, true);
   }
@@ -526,16 +600,17 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
   // 1. D1 — source of truth. If this fails, nothing is stored anywhere.
   try {
     await env.DB.prepare(
-      `INSERT INTO memories (id, key, content, tags, importance, author, created_at, updated_at, accessed_at, access_count)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
+      `INSERT INTO memories (id, key, content, tags, importance, author, memory_type, created_at, updated_at, accessed_at, access_count)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
        ON CONFLICT (key) DO UPDATE SET
          content = excluded.content,
          tags = excluded.tags,
          importance = excluded.importance,
          author = excluded.author,
+         memory_type = excluded.memory_type,
          updated_at = excluded.updated_at`,
     )
-      .bind(id, input.key, input.content, JSON.stringify(input.tags), input.importance, input.author, now, now, now)
+      .bind(id, input.key, input.content, JSON.stringify(input.tags), input.importance, input.author, input.memory_type, now, now, now)
       .run();
   } catch (err) {
     console.error('[storeMemory] D1 upsert failed:', err instanceof Error ? err.message : err, { key: input.key });
@@ -579,6 +654,41 @@ async function storeMemory(input: StoreMemoryInput, env: Env): Promise<McpToolRe
   } catch (err) {
     vecOk = false;
     console.error('[storeMemory] Vectorize upsert failed (D1 row exists):', err instanceof Error ? err.message : err, { key: input.key });
+  }
+
+  // 4. Auto-link: find similar memories via Vectorize and create relationship edges.
+  //    Reuses the already-computed embedding — zero extra AI calls.
+  //    Non-fatal — failure is logged but does not unwind the store.
+  //    Both A→B and B→A are stored so get_related_memories only needs WHERE from_key = ?.
+  if (vecOk) {
+    try {
+      const AUTO_LINK_TOP_K = 5;
+      const AUTO_LINK_THRESHOLD = 0.82;
+      const similar = await env.VECTORS.query(embedding, {
+        topK: AUTO_LINK_TOP_K + 1, // +1 to account for self-match
+        returnMetadata: 'all',
+      });
+      const edges = (similar.matches ?? [])
+        .filter((m) => m.id !== input.key && m.score >= AUTO_LINK_THRESHOLD)
+        .slice(0, AUTO_LINK_TOP_K);
+      if (edges.length > 0) {
+        const linkStmts = edges.flatMap((m) => [
+          env.DB.prepare(
+            `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
+             VALUES (?1, ?2, 'similar', ?3, ?4)
+             ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
+          ).bind(input.key, m.id, m.score, now),
+          env.DB.prepare(
+            `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
+             VALUES (?1, ?2, 'similar', ?3, ?4)
+             ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
+          ).bind(m.id, input.key, m.score, now),
+        ]);
+        await env.DB.batch(linkStmts);
+      }
+    } catch (err) {
+      console.error('[storeMemory] auto-link failed (non-fatal):', err instanceof Error ? err.message : err, { key: input.key });
+    }
   }
 
   // Return a message that honestly reflects the result. A partial store
@@ -671,12 +781,14 @@ async function retrieveMemory(input: RetrieveMemoryInput, env: Env): Promise<Mcp
   // Rerank candidates for precision. Pass fusion scores for meaningful fallback on failure.
   const reranked = await rerank(env.AI, input.query, memories, rrfScores);
 
-  // Combined scoring with recency decay
+  // Combined scoring with tier-aware half-life recency decay.
+  // episodic decays fast (half-life 7d), procedural barely decays (half-life 693d).
   const now = Date.now();
   const scored = reranked.map((item) => {
     const hoursSinceAccess =
       (now - new Date(item.memory.accessed_at).getTime()) / (1000 * 60 * 60);
-    const recencyScore = Math.exp(-0.001 * Math.max(hoursSinceAccess, 0));
+    const halfLife = HALF_LIFE_HOURS[item.memory.memory_type] ?? HALF_LIFE_HOURS.semantic;
+    const recencyScore = Math.pow(2, -Math.max(hoursSinceAccess, 0) / halfLife);
     const combinedScore =
       0.5 * item.rerankerScore + 0.3 * recencyScore + 0.2 * item.memory.importance;
     return { memory: item.memory, combinedScore, rerankerScore: item.rerankerScore };
@@ -797,12 +909,12 @@ async function deleteMemory(input: DeleteMemoryInput, env: Env): Promise<McpTool
     return textResult(`Memory "${input.key}" not found.`, true);
   }
 
-  // Delete from D1 + FTS5 first (source of truth and keyword index).
-  // These are in the same database and atomic via batch.
+  // Delete from D1 + FTS5 + relationships (all in same database, atomic via batch).
   try {
     await env.DB.batch([
       env.DB.prepare('DELETE FROM memories WHERE key = ?1').bind(input.key),
       env.DB.prepare('DELETE FROM memories_fts WHERE key = ?1').bind(input.key),
+      env.DB.prepare('DELETE FROM memory_relationships WHERE from_key = ?1 OR to_key = ?1').bind(input.key),
     ]);
   } catch (err) {
     console.error('[deleteMemory] D1/FTS5 delete failed:', err instanceof Error ? err.message : err, { key: input.key });
@@ -849,6 +961,7 @@ async function clearMemories(_input: ClearMemoriesInput, env: Env): Promise<McpT
   await env.DB.batch([
     env.DB.prepare('DELETE FROM memories'),
     env.DB.prepare('DELETE FROM memories_fts'),
+    env.DB.prepare('DELETE FROM memory_relationships'),
   ]);
 
   const failedBatches: Array<{ start: number; end: number; error: string }> = [];
@@ -882,6 +995,56 @@ async function clearMemories(_input: ClearMemoriesInput, env: Env): Promise<McpT
   }
 
   return textResult(`Cleared all ${total} memories.`);
+}
+
+async function getRelatedMemories(input: GetRelatedMemoriesInput, env: Env): Promise<McpToolResult> {
+  const limit = input.limit ?? 10;
+
+  let query = `
+    SELECT r.to_key, r.relationship_type, r.strength, r.created_at,
+           m.content, m.tags, m.importance, m.author, m.memory_type
+    FROM memory_relationships r
+    JOIN memories m ON m.key = r.to_key
+    WHERE r.from_key = ?1
+  `;
+  const bindings: unknown[] = [input.key];
+  let idx = 2;
+
+  if (input.relationship_type) {
+    query += ` AND r.relationship_type = ?${idx}`;
+    bindings.push(input.relationship_type);
+    idx++;
+  }
+
+  query += ` ORDER BY r.strength DESC LIMIT ?${idx}`;
+  bindings.push(limit);
+
+  const rows = await env.DB.prepare(query).bind(...bindings).all<{
+    to_key: string;
+    relationship_type: string;
+    strength: number;
+    created_at: string;
+    content: string;
+    tags: string;
+    importance: number;
+    author: string;
+    memory_type: string;
+  }>();
+
+  if (!rows.results?.length) {
+    return textResult(`No related memories found for "${input.key}".`);
+  }
+
+  const lines = rows.results.map((r, i) => {
+    const tags = JSON.parse(r.tags) as string[];
+    return [
+      `${i + 1}. **${r.to_key}** (${r.relationship_type}, strength: ${r.strength.toFixed(3)})`,
+      `   Type: ${r.memory_type} | Importance: ${r.importance} | Tags: ${tags.join(', ') || 'none'}`,
+      `   ${r.content}`,
+    ].join('\n');
+  });
+
+  return textResult(`Found ${rows.results.length} related memories for "${input.key}":\n\n${lines.join('\n\n')}`);
 }
 
 // ─── Consolidation (read-only analysis) ──────────────────────────

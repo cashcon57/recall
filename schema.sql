@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS memories (
   tags TEXT NOT NULL DEFAULT '[]',
   importance REAL NOT NULL DEFAULT 0.5,
   author TEXT NOT NULL,
+  memory_type TEXT NOT NULL DEFAULT 'semantic',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   accessed_at TEXT NOT NULL,
@@ -25,3 +26,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   tags,
   tokenize='porter unicode61'
 );
+
+-- Graph layer: auto-relationships between memories (similarity, co-access, etc.)
+-- Populated automatically on store_memory via embedding similarity.
+-- Both A→B and B→A are stored so get_related_memories only needs WHERE from_key = ?.
+CREATE TABLE IF NOT EXISTS memory_relationships (
+  from_key          TEXT NOT NULL,
+  to_key            TEXT NOT NULL,
+  relationship_type TEXT NOT NULL DEFAULT 'similar',
+  strength          REAL NOT NULL,
+  created_at        TEXT NOT NULL,
+  PRIMARY KEY (from_key, to_key, relationship_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rel_from ON memory_relationships(from_key);
+CREATE INDEX IF NOT EXISTS idx_rel_to   ON memory_relationships(to_key);

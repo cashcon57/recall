@@ -15,6 +15,8 @@ export interface Env {
 
 // --- Domain types ---
 
+export type MemoryType = 'episodic' | 'semantic' | 'procedural';
+
 export interface Memory {
   id: string;
   key: string;
@@ -22,6 +24,7 @@ export interface Memory {
   tags: string[];
   importance: number;
   author: string;
+  memory_type: MemoryType;
   created_at: string;
   updated_at: string;
   accessed_at: string;
@@ -36,10 +39,19 @@ export interface MemoryRow {
   tags: string;
   importance: number;
   author: string;
+  memory_type: MemoryType;
   created_at: string;
   updated_at: string;
   accessed_at: string;
   access_count: number;
+}
+
+export interface MemoryRelationship {
+  from_key: string;
+  to_key: string;
+  relationship_type: string;
+  strength: number;
+  created_at: string;
 }
 
 // --- JSON-RPC 2.0 types ---
@@ -85,6 +97,13 @@ export interface StoreMemoryInput {
   tags: string[];
   importance: number;
   author: string;
+  memory_type: MemoryType;
+}
+
+export interface GetRelatedMemoriesInput {
+  key: string;
+  relationship_type?: string;
+  limit?: number;
 }
 
 export interface RetrieveMemoryInput {
