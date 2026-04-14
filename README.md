@@ -802,6 +802,7 @@ Recall was extracted from a private memory server built for real production use.
 ### Architecture
 
 - **[NornicDB](https://github.com/orneryd/NornicDB)** — tiered memory half-life design (episodic / semantic / procedural) and the auto-relationship graph pattern are ported from NornicDB's approach.
+- **[MemPalace](https://github.com/MemPalace/mempalace)** — namespace-per-project isolation pattern (v2.1+).
 - **[Model Context Protocol](https://modelcontextprotocol.io)** — protocol spec by Anthropic.
 
 ### Multi-backend stack (v2.0.0)
