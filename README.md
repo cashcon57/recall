@@ -771,4 +771,26 @@ MIT. See [LICENSE](./LICENSE).
 
 ## Credits
 
-Recall was extracted from a private memory server built for real production use. The hybrid search + reranker + recency decay pipeline turned out to generalize well, so here it is. Cloudflare's `bge-m3` and `bge-reranker-base` models do most of the heavy lifting — credit to the BAAI team for building them and to Cloudflare for making them free on Workers AI.
+Recall was extracted from a private memory server built for real production use. The hybrid search + reranker + recency decay pipeline turned out to generalize well, so here it is.
+
+### Models & embeddings
+
+- **[BAAI](https://huggingface.co/BAAI)** — `bge-m3` (embeddings) and `bge-reranker-base` (cross-encoder). These do most of the heavy lifting.
+- **[Xenova](https://huggingface.co/Xenova)** — maintains the ONNX export of bge-m3 that makes the local and Docker backends possible without Workers AI.
+- **[Cloudflare](https://developers.cloudflare.com/workers-ai/)** — Workers AI runtime for hosting BAAI's models on the free tier.
+
+### Architecture
+
+- **[NornicDB](https://github.com/orneryd/NornicDB)** — tiered memory half-life design (episodic / semantic / procedural) and the auto-relationship graph pattern are ported from NornicDB's approach.
+- **[Model Context Protocol](https://modelcontextprotocol.io)** — protocol spec by Anthropic.
+
+### Multi-backend stack (v2.0.0)
+
+- **[sqlite-vec](https://github.com/asg017/sqlite-vec)** (Alex Garcia) — SQLite vector extension powering the local backend.
+- **[pgvector](https://github.com/pgvector/pgvector)** (Andrew Kane) — Postgres vector extension powering the Docker backend.
+- **[better-sqlite3](https://github.com/WiseLibs/better-sqlite3)** (WiseLibs) — synchronous SQLite binding used by the local stdio server.
+- **[@huggingface/transformers](https://github.com/huggingface/transformers.js)** (HuggingFace) — ONNX pipeline for running bge-m3 locally in Node.
+
+### Dependencies
+
+Full list in `package.json`, `local/package.json`, and `docker/package.json`.
