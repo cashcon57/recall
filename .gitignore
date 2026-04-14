@@ -13,6 +13,7 @@ src/**/*.js
 # Local config (contains database_id after setup)
 wrangler.toml
 wrangler.toml.bak
+wrangler.*.toml
 
 # Secrets
 .env
