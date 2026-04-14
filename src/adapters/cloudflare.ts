@@ -60,6 +60,33 @@ export class CloudflareAdapter implements RecallAdapter {
     return scores;
   }
 
+  async ftsSearch(query: string, limit: number): Promise<string[]> {
+    const safeQuery = query.replace(/['"*()^~:]/g, ' ').trim();
+    if (!safeQuery) return [];
+    try {
+      const result = await this.env.DB.prepare(
+        `SELECT key FROM memories_fts WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?`
+      ).bind(safeQuery, limit).all<{ key: string }>();
+      return result.results?.map(r => r.key) ?? [];
+    } catch (err) {
+      console.error('[fts:cf] search failed:', err instanceof Error ? err.message : err);
+      return [];
+    }
+  }
+
+  async ftsUpsert(key: string, content: string, tags: string): Promise<void> {
+    await this.env.DB.batch([
+      this.env.DB.prepare('DELETE FROM memories_fts WHERE key = ?').bind(key),
+      this.env.DB.prepare('INSERT INTO memories_fts (key, content, tags) VALUES (?, ?, ?)').bind(key, content, tags),
+    ]);
+  }
+
+  async ftsDelete(keys: string[]): Promise<void> {
+    if (!keys.length) return;
+    const placeholders = keys.map(() => '?').join(',');
+    await this.env.DB.prepare(`DELETE FROM memories_fts WHERE key IN (${placeholders})`).bind(...keys).run();
+  }
+
   isDestructiveAllowed(): boolean {
     return this.env.ALLOW_DESTRUCTIVE_TOOLS === 'true';
   }

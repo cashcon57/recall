@@ -400,30 +400,6 @@ const HALF_LIFE_HOURS: Record<string, number> = {
 const AUTO_LINK_THRESHOLD = 0.82;
 const AUTO_LINK_TOP_K = 5;
 
-/** Query FTS5 for keyword/BM25 matches. Returns keys in rank order. */
-async function ftsSearch(
-  adapter: RecallAdapter,
-  query: string,
-  limit: number,
-): Promise<string[]> {
-  // Escape FTS5 special characters to prevent syntax errors
-  const safeQuery = query.replace(/['"*()^~:]/g, ' ').trim();
-  if (!safeQuery) return [];
-
-  try {
-    const rows = await adapter.query<{ key: string }>(
-      `SELECT key FROM memories_fts WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?`,
-      [safeQuery, limit],
-    );
-    return rows.map((r) => r.key);
-  } catch (err) {
-    // FTS query can fail on certain inputs (parse errors, D1 outages).
-    // We return [] so the caller's hybrid search still functions via
-    // vector-only, but the failure is logged for debuggability.
-    console.error('[fts] search failed:', err instanceof Error ? err.message : err, { query: safeQuery });
-    return [];
-  }
-}
 
 /**
  * Truncate content for reranking. The reranker only needs enough context to
@@ -591,18 +567,16 @@ async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Pro
     throw err;
   }
 
-  // 2. FTS5 — cheap, happens in same D1 database. Failure warns but does
-  //    not unwind the D1 write. FTS5 will be re-synced on next upsert of
-  //    this key, or can be rebuilt from D1 by a reindex job.
+  // 2. FTS index — adapter-specific implementation (FTS5 for SQLite backends,
+  //    no-op for Postgres which auto-maintains GIN). Failure warns but does
+  //    not unwind the D1/PG write. FTS will be re-synced on next upsert of
+  //    this key, or can be rebuilt from the base table by a reindex job.
   let ftsOk = true;
   try {
-    await adapter.batch([
-      { sql: 'DELETE FROM memories_fts WHERE key = ?', params: [input.key] },
-      { sql: 'INSERT INTO memories_fts (key, content, tags) VALUES (?, ?, ?)', params: [input.key, input.content, input.tags.join(' ')] },
-    ]);
+    await adapter.ftsUpsert(input.key, input.content, input.tags.join(' '));
   } catch (err) {
     ftsOk = false;
-    console.error('[storeMemory] FTS5 sync failed (D1 row exists):', err instanceof Error ? err.message : err, { key: input.key });
+    console.error('[storeMemory] FTS sync failed (DB row exists):', err instanceof Error ? err.message : err, { key: input.key });
   }
 
   // 3. Vectorize — most likely to fail (external service). Failure warns
@@ -701,10 +675,10 @@ async function retrieveMemory(input: RetrieveMemoryInput, adapter: RecallAdapter
 
   const queryEmbedding = await adapter.embed(input.query);
 
-  // Run vector search and FTS5 keyword search in parallel
+  // Run vector search and FTS keyword search in parallel
   const [vectorMatches, ftsKeys] = await Promise.all([
     adapter.vectorQuery(queryEmbedding, Math.min(candidateCount * 2, 50)),
-    ftsSearch(adapter, input.query, candidateCount * 2),
+    adapter.ftsSearch(input.query, candidateCount * 2),
   ]);
 
   // Reciprocal Rank Fusion — merge vector and keyword results
@@ -870,16 +844,23 @@ async function deleteMemory(input: DeleteMemoryInput, adapter: RecallAdapter): P
     return textResult(`Memory "${input.key}" not found.`, true);
   }
 
-  // Delete from D1 + FTS5 + relationships (all in same database, atomic via batch).
+  // Delete from DB + relationships atomically. FTS is updated separately via
+  // the adapter's ftsDelete (no-op on Postgres where GIN auto-maintains).
   try {
     await adapter.batch([
       { sql: 'DELETE FROM memories WHERE key = ?', params: [input.key] },
-      { sql: 'DELETE FROM memories_fts WHERE key = ?', params: [input.key] },
       { sql: 'DELETE FROM memory_relationships WHERE from_key = ? OR to_key = ?', params: [input.key, input.key] },
     ]);
   } catch (err) {
-    console.error('[deleteMemory] D1/FTS5 delete failed:', err instanceof Error ? err.message : err, { key: input.key });
+    console.error('[deleteMemory] DB delete failed:', err instanceof Error ? err.message : err, { key: input.key });
     throw err;
+  }
+
+  // FTS cleanup — separate so a FTS failure doesn't rollback the authoritative delete.
+  try {
+    await adapter.ftsDelete([input.key]);
+  } catch (err) {
+    console.error('[deleteMemory] FTS delete failed (DB row already removed):', err instanceof Error ? err.message : err, { key: input.key });
   }
 
   // Vectorize delete is separate and can fail independently. If it does,
@@ -918,19 +899,25 @@ async function clearMemories(_input: ClearMemoriesInput, adapter: RecallAdapter)
   }
 
   const rows = await adapter.query<{ key: string }>('SELECT key FROM memories');
+  const allKeys = rows.map((r) => r.key);
 
   await adapter.batch([
     { sql: 'DELETE FROM memories' },
-    { sql: 'DELETE FROM memories_fts' },
     { sql: 'DELETE FROM memory_relationships' },
   ]);
 
+  // FTS cleanup — adapter-specific (FTS5 tables on SQLite, no-op on Postgres).
+  try {
+    await adapter.ftsDelete(allKeys);
+  } catch (err) {
+    console.error('[clearMemories] FTS delete failed (DB rows already removed):', err instanceof Error ? err.message : err);
+  }
+
   const failedBatches: Array<{ start: number; end: number; error: string }> = [];
-  if (rows.length) {
-    const keys = rows.map((r) => r.key);
+  if (allKeys.length) {
     const BATCH = 100;
-    for (let i = 0; i < keys.length; i += BATCH) {
-      const slice = keys.slice(i, i + BATCH);
+    for (let i = 0; i < allKeys.length; i += BATCH) {
+      const slice = allKeys.slice(i, i + BATCH);
       try {
         await adapter.vectorDelete(slice);
       } catch (err) {
@@ -943,7 +930,7 @@ async function clearMemories(_input: ClearMemoriesInput, adapter: RecallAdapter)
     }
   }
 
-  const total = rows.length;
+  const total = allKeys.length;
   if (failedBatches.length > 0) {
     const orphanCount = failedBatches.reduce((sum, b) => sum + (b.end - b.start), 0);
     return textResult(

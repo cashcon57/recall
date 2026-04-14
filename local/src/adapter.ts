@@ -94,16 +94,61 @@ export class LocalAdapter implements RecallAdapter {
       `SELECT key, distance FROM vec_memories WHERE embedding MATCH ? AND k = ? ORDER BY distance LIMIT ?`
     ).all(vecJson, topK, topK) as Array<{ key: string; distance: number }>;
 
-    // Convert L2 distance to cosine-like similarity score (0-1)
-    return rows.map((r) => ({ id: r.key, score: 1 / (1 + r.distance) }));
+    // For L2-normalized vectors: L2² = 2(1 - cos) → cos = 1 - L2²/2
+    return rows.map((r) => ({
+      id: r.key,
+      score: Math.max(0, Math.min(1, 1 - (r.distance * r.distance) / 2)),
+    }));
+  }
+
+  // Eager-load embedder. Must be called before any tool operations.
+  async init(): Promise<void> {
+    if (!this.embedder) {
+      process.stderr.write('[recall-local] loading embedding model (first run downloads ~580MB)...\n');
+      this.embedder = await pipeline('feature-extraction', EMBED_MODEL, { dtype: 'fp32' });
+      process.stderr.write('[recall-local] embedding model ready\n');
+    }
   }
 
   async embed(text: string): Promise<number[]> {
     if (!this.embedder) {
       this.embedder = await pipeline('feature-extraction', EMBED_MODEL, { dtype: 'fp32' });
     }
-    const output = await this.embedder(text, { pooling: 'mean', normalize: true });
-    return Array.from(output.data as Float32Array);
+    const output = await this.embedder(text, { pooling: 'cls', normalize: true });
+    const vec = Array.from(output.data as Float32Array);
+    if (vec.length !== EMBED_DIM) {
+      throw new Error(`Unexpected embedding dimension: got ${vec.length}, expected ${EMBED_DIM}. Model: ${EMBED_MODEL}`);
+    }
+    return vec;
+  }
+
+  async ftsSearch(query: string, limit: number): Promise<string[]> {
+    const safeQuery = query.replace(/['"*()^~:]/g, ' ').trim();
+    if (!safeQuery) return [];
+    try {
+      const rows = this.db.prepare(
+        `SELECT key FROM memories_fts WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?`
+      ).all(safeQuery, limit) as Array<{ key: string }>;
+      return rows.map(r => r.key);
+    } catch (err) {
+      process.stderr.write(`[fts:local] search failed: ${err instanceof Error ? err.message : err}\n`);
+      return [];
+    }
+  }
+
+  async ftsUpsert(key: string, content: string, tags: string): Promise<void> {
+    const txn = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM memories_fts WHERE key = ?').run(key);
+      this.db.prepare('INSERT INTO memories_fts (key, content, tags) VALUES (?, ?, ?)').run(key, content, tags);
+    });
+    txn();
+  }
+
+  async ftsDelete(keys: string[]): Promise<void> {
+    if (!keys.length) return;
+    const placeholders = keys.map(() => '?').join(',');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.db.prepare(`DELETE FROM memories_fts WHERE key IN (${placeholders})`).run(...(keys as any[]));
   }
 
   async rerank(_query: string, passages: string[]): Promise<number[]> {

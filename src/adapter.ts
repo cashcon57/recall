@@ -28,6 +28,15 @@ export interface RecallAdapter {
   // Cross-encoder rerank: returns score per passage
   rerank(query: string, passages: string[]): Promise<number[]>;
 
+  // Keyword/BM25 search, returns ranked keys
+  ftsSearch(query: string, limit: number): Promise<string[]>;
+
+  // Upsert FTS index for a single key (no-op on backends with auto-maintained FTS)
+  ftsUpsert(key: string, content: string, tags: string): Promise<void>;
+
+  // Delete FTS index for keys (no-op on backends with auto-maintained FTS)
+  ftsDelete(keys: string[]): Promise<void>;
+
   // Whether destructive ops (clear_memories) are enabled
   isDestructiveAllowed(): boolean;
 }

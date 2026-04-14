@@ -294,9 +294,9 @@ async function runScheduledConsolidation(env: Env): Promise<void> {
         sql: `INSERT INTO memories (id, key, content, tags, importance, author, memory_type, created_at, updated_at, accessed_at, access_count) VALUES (?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT (key) DO UPDATE SET content=excluded.content, tags=excluded.tags, updated_at=excluded.updated_at`,
         params: [id, reportKey, report, tags, 0.3, 'system-cron', 'semantic', now, now, now],
       },
-      { sql: 'DELETE FROM memories_fts WHERE key = ?', params: [reportKey] },
-      { sql: 'INSERT INTO memories_fts (key, content, tags) VALUES (?,?,?)', params: [reportKey, report, '_system consolidation'] },
     ]);
+
+    await adapter.ftsUpsert(reportKey, report, '_system consolidation');
 
     if (embedding.length) {
       await adapter.vectorUpsert(reportKey, embedding, {
