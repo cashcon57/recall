@@ -54,9 +54,9 @@ export class CloudflareAdapter implements RecallAdapter {
       RERANK_MODEL,
       { query, contexts: passages.map((text) => ({ text })) },
     ) as { data: Array<{ index: number; score: number }> };
-    if (!result?.data?.length) return passages.map(() => 0.5);
-    const scores = new Array(passages.length).fill(0.5);
-    for (const r of result.data) scores[r.index] = 1 / (1 + Math.exp(-r.score));
+    if (!result?.data?.length) return passages.map(() => 0);
+    const scores = new Array(passages.length).fill(0);
+    for (const r of result.data) scores[r.index] = r.score; // raw logits
     return scores;
   }
 
