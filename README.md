@@ -627,6 +627,58 @@ MEMORY_API_KEY=local-dev-key-doesnt-need-to-be-secure
 
 If you accidentally commit a secret, rotate it immediately and treat the old value as compromised.
 
+## Updating
+
+Recall follows semver. Check [releases](https://github.com/cashcon57/recall/releases) for each version's notes — **release notes include a per-version Update section with the exact commands for each backend.** Generic flow:
+
+### Cloudflare Workers
+
+```bash
+# 1. Pull the latest code
+git pull origin main
+
+# 2. Apply any new D1 migrations (idempotent per file, but ALTER TABLE errors on re-run)
+#    Check migrations/ for anything newer than your last update.
+wrangler d1 execute <your-db-name> --remote --file=migrations/NNNN_whatever.sql
+
+# 3. Deploy the worker
+wrangler deploy
+```
+
+Migrations ship as numbered SQL files in `migrations/`. Each file adds a schema change (e.g. `0003_namespace.sql`). Run only the migrations newer than your current version, in order.
+
+### Local stdio
+
+```bash
+git pull origin main
+cd local && npm install && npm run build
+```
+
+The local backend re-applies `setup.sql` on every start (all `CREATE ... IF NOT EXISTS`), so schema changes land automatically on the next process launch. No manual migration needed.
+
+### Docker
+
+```bash
+git pull origin main
+cd docker && docker compose build && docker compose up -d
+```
+
+Postgres keeps its data in the `pgdata` volume. New schema objects from `setup.sql` land automatically via `docker-entrypoint-initdb.d` on fresh installs; **existing installs need to run the ALTER TABLE statement from the matching `migrations/NNNN_*.sql` file manually** against the Postgres container:
+
+```bash
+docker compose exec postgres psql -U recall -d recall -f /path/to/migrations/NNNN_whatever.sql
+```
+
+(Note: SQLite-syntax migrations may need minor syntax tweaks for Postgres — check the migration's comment header for backend-specific instructions.)
+
+### Release notes format
+
+Every release from v2.1 onward includes:
+- **Breaking changes** — if any
+- **Schema migrations** — exact commands per backend
+- **New tool methods or fields**
+- **Upgrade steps** — in the order you should run them
+
 ## Development
 
 ```bash
