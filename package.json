@@ -40,7 +40,7 @@
     "@cloudflare/workers-types": "^4.20260412.1",
     "@vitest/ui": "^4.1.4",
     "typescript": "^6.0.2",
-    "vitest": "^4.1.4",
+    "vitest": "^4.1.5",
     "wrangler": "^4.81.0"
   }
 }
