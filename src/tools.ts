@@ -282,7 +282,7 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: 'consolidate_memories',
     description:
-      'Analyze the memory store for consolidation opportunities. Finds similar memory pairs that may be candidates for merging and stale memories that are never accessed. This is a READ-ONLY operation — no memories are modified. Returns a report with recommendations that you can act on using store_memory and delete_memory.',
+      'Analyze the memory store for consolidation and lifecycle maintenance opportunities. Finds similar pairs, stale/expired/unverified/low-confidence memories, provenance gaps, superseded-but-accessed entries, and deprecated deletion candidates. This is a READ-ONLY operation — no memories are modified. Returns a report with recommendations that you can act on using mark_memory_status, verify_memory, supersede_memory, store_memory, and delete_memory.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1666,26 +1666,68 @@ export async function runConsolidationReport(
   );
 
   if (!allRows.length) {
-    return '## Memory Consolidation Report\n\nNo memories to analyze.';
+    return '## Memory Consolidation Report\n\n**READ-ONLY: this report did not modify, delete, verify, supersede, or mark any memories.**\n\nNo memories to analyze.';
   }
 
   const memories = allRows.map(rowToMemory);
 
-  // 2. Find stale memories (cheap — D1 only, no AI calls)
+  // 2. Find lifecycle maintenance candidates (cheap — D1 only, no AI calls)
   const now = Date.now();
   const staleThresholdMs = staleDays * 24 * 60 * 60 * 1000;
+  const activeOrStale = new Set<MemoryStatus>(['active', 'stale']);
+  const daysSince = (iso: string): number => Math.floor((now - new Date(iso).getTime()) / (24 * 60 * 60 * 1000));
+  const hasNoProvenance = (m: Memory): boolean =>
+    m.source_type === 'manual' &&
+    !m.source_url &&
+    !m.source_path &&
+    !m.source_title &&
+    !m.source_hash;
+
   const staleMemories = memories
     .filter((m) => {
       const age = now - new Date(m.updated_at).getTime();
-      return m.access_count === 0 && age > staleThresholdMs;
+      return activeOrStale.has(m.status) && m.access_count === 0 && age > staleThresholdMs;
     })
     .map((m) => ({
       key: m.key,
-      age_days: Math.floor(
-        (now - new Date(m.updated_at).getTime()) / (24 * 60 * 60 * 1000),
-      ),
+      status: m.status,
+      age_days: daysSince(m.updated_at),
       importance: m.importance,
     }));
+
+  const expiredMemories = memories
+    .filter((m) => activeOrStale.has(m.status) && m.expires_at && Date.parse(m.expires_at) < now)
+    .map((m) => ({ key: m.key, status: m.status, expired_days: daysSince(m.expires_at as string), expires_at: m.expires_at }));
+
+  const oldUnverifiedMemories = memories
+    .filter((m) => {
+      if (!activeOrStale.has(m.status)) return false;
+      if (!m.verified_at) return true;
+      return now - Date.parse(m.verified_at) > staleThresholdMs;
+    })
+    .map((m) => ({
+      key: m.key,
+      status: m.status,
+      verified_at: m.verified_at,
+      unverified_days: m.verified_at ? daysSince(m.verified_at) : null,
+      confidence: m.confidence,
+    }));
+
+  const supersededAccessedMemories = memories
+    .filter((m) => m.status === 'superseded' && m.access_count > 0)
+    .map((m) => ({ key: m.key, access_count: m.access_count, superseded_by_key: m.superseded_by_key }));
+
+  const lowConfidenceMemories = memories
+    .filter((m) => m.confidence < 0.5)
+    .map((m) => ({ key: m.key, status: m.status, confidence: m.confidence }));
+
+  const noProvenanceMemories = memories
+    .filter(hasNoProvenance)
+    .map((m) => ({ key: m.key, status: m.status, confidence: m.confidence }));
+
+  const deprecatedMemories = memories
+    .filter((m) => m.status === 'deprecated')
+    .map((m) => ({ key: m.key, importance: m.importance, access_count: m.access_count }));
 
   // 3. Generate embeddings sequentially for similarity analysis
   const embeddings: number[][] = [];
@@ -1730,14 +1772,19 @@ export async function runConsolidationReport(
   report.push(
     `Scanned ${memories.length} memories at ${new Date().toISOString()}`,
   );
+  report.push('**READ-ONLY: this report did not modify, delete, verify, supersede, or mark any memories.**');
   report.push('');
+
+  const pushEmpty = (title: string, empty: string): void => {
+    report.push(`### ${title}`, empty, '');
+  };
 
   if (similarPairs.length > 0) {
     report.push(
-      `### Similar Memory Pairs (threshold: ${similarityThreshold})`,
+      `### Similar Memory Pairs That May Need Merge/Supersession (threshold: ${similarityThreshold})`,
     );
     report.push(
-      `Found ${similarPairs.length} pair(s) that may be candidates for merging:`,
+      `Found ${similarPairs.length} pair(s) that may be candidates for merge or supersession. Suggested lifecycle tools: \`supersede_memory\` when one memory replaces another, or \`store_memory\` followed by \`delete_memory\` when manually merging into a new key.`,
     );
     report.push('');
     for (const pair of similarPairs.slice(0, 25)) {
@@ -1750,11 +1797,7 @@ export async function runConsolidationReport(
     }
     report.push('');
   } else {
-    report.push(
-      '### Similar Memory Pairs',
-      'No similar pairs found above threshold.',
-      '',
-    );
+    pushEmpty('Similar Memory Pairs That May Need Merge/Supersession', 'No similar pairs found above threshold.');
   }
 
   if (staleMemories.length > 0) {
@@ -1767,24 +1810,97 @@ export async function runConsolidationReport(
     report.push('');
     for (const mem of staleMemories) {
       report.push(
-        `- **"${mem.key}"** — ${mem.age_days} days old, importance: ${mem.importance}`,
+        `- **"${mem.key}"** — status: ${mem.status}, ${mem.age_days} days old, importance: ${mem.importance}. Suggested: \`mark_memory_status\`, \`verify_memory\`, or \`delete_memory\` after review.`,
       );
     }
     report.push('');
   } else {
-    report.push('### Stale Memories', 'No stale memories found.', '');
+    pushEmpty('Stale Memories', 'No stale memories found.');
+  }
+
+  if (expiredMemories.length > 0) {
+    report.push('### Expired Active/Stale Memories');
+    report.push('Active or stale memories whose `expires_at` is in the past. Suggested: `verify_memory` to refresh, `mark_memory_status` to stale/deprecated, or `delete_memory` if no longer useful.');
+    report.push('');
+    for (const mem of expiredMemories) {
+      report.push(`- **"${mem.key}"** — status: ${mem.status}, expired ${mem.expired_days} days ago (expires_at: ${mem.expires_at})`);
+    }
+    report.push('');
+  } else {
+    pushEmpty('Expired Active/Stale Memories', 'No expired active/stale memories found.');
+  }
+
+  if (oldUnverifiedMemories.length > 0) {
+    report.push(`### Old Unverified Active/Stale Memories (stale_days: ${staleDays})`);
+    report.push('Active or stale memories with `verified_at` missing or older than the configured stale_days. Suggested: `verify_memory` with provenance/confidence, or `mark_memory_status` if trust is uncertain.');
+    report.push('');
+    for (const mem of oldUnverifiedMemories) {
+      const age = mem.unverified_days === null ? 'never verified' : `verified ${mem.unverified_days} days ago`;
+      report.push(`- **"${mem.key}"** — status: ${mem.status}, ${age}, confidence: ${mem.confidence}`);
+    }
+    report.push('');
+  } else {
+    pushEmpty('Old Unverified Active/Stale Memories', 'No old unverified active/stale memories found.');
+  }
+
+  if (supersededAccessedMemories.length > 0) {
+    report.push('### Superseded Memories Still Highly Accessed');
+    report.push('Superseded memories with access_count > 0 may still be retrieved or referenced. Suggested: inspect callers, `verify_memory`/`mark_memory_status`, or update retrieval habits before `delete_memory`.');
+    report.push('');
+    for (const mem of supersededAccessedMemories) {
+      report.push(`- **"${mem.key}"** — access_count: ${mem.access_count}${mem.superseded_by_key ? `, superseded_by: ${mem.superseded_by_key}` : ''}`);
+    }
+    report.push('');
+  } else {
+    pushEmpty('Superseded Memories Still Highly Accessed', 'No superseded memories with access_count > 0 found.');
+  }
+
+  if (lowConfidenceMemories.length > 0) {
+    report.push('### Low-Confidence Memories (confidence < 0.5)');
+    report.push('Suggested: `verify_memory` with stronger provenance/confidence, `mark_memory_status` as stale/deprecated, or `delete_memory` if incorrect.');
+    report.push('');
+    for (const mem of lowConfidenceMemories) {
+      report.push(`- **"${mem.key}"** — status: ${mem.status}, confidence: ${mem.confidence}`);
+    }
+    report.push('');
+  } else {
+    pushEmpty('Low-Confidence Memories', 'No memories with confidence < 0.5 found.');
+  }
+
+  if (noProvenanceMemories.length > 0) {
+    report.push('### Memories With No Provenance');
+    report.push('Manual memories without source_url/source_path/source_title/source_hash. Suggested: `verify_memory` to attach provenance or confidence, or `mark_memory_status` if trust cannot be established.');
+    report.push('');
+    for (const mem of noProvenanceMemories) {
+      report.push(`- **"${mem.key}"** — status: ${mem.status}, confidence: ${mem.confidence}`);
+    }
+    report.push('');
+  } else {
+    pushEmpty('Memories With No Provenance', 'No manual memories without provenance found.');
+  }
+
+  if (deprecatedMemories.length > 0) {
+    report.push('### Deprecated Memories That Can Be Deleted');
+    report.push('Deprecated memories are deletion candidates after final review. Suggested: `delete_memory` for obsolete entries, or `mark_memory_status` if they should be retained.');
+    report.push('');
+    for (const mem of deprecatedMemories) {
+      report.push(`- **"${mem.key}"** — importance: ${mem.importance}, access_count: ${mem.access_count}`);
+    }
+    report.push('');
+  } else {
+    pushEmpty('Deprecated Memories That Can Be Deleted', 'No deprecated deletion candidates found.');
   }
 
   report.push('### Recommendations');
-  if (similarPairs.length > 0 || staleMemories.length > 0) {
+  const issueCount = similarPairs.length + staleMemories.length + expiredMemories.length + oldUnverifiedMemories.length + supersededAccessedMemories.length + lowConfidenceMemories.length + noProvenanceMemories.length + deprecatedMemories.length;
+  if (issueCount > 0) {
     report.push(
-      'Review the items above and use `store_memory` (to merge content under one key) or `delete_memory` (to remove stale entries) as needed.',
+      'Review the sections above and apply lifecycle tools deliberately: `verify_memory` to refresh trust/provenance, `mark_memory_status` to active/stale/deprecated/superseded, `supersede_memory` when replacing stale content, `store_memory` for manual merges, and `delete_memory` only after review.',
     );
-    report.push(
-      '**This report is read-only — no memories were modified.**',
-    );
+    report.push('**This report is read-only — no memories were modified.**');
   } else {
-    report.push('Memory store looks clean. No action needed.');
+    report.push('Memory store looks clean. No lifecycle action needed.');
+    report.push('**This report is read-only — no memories were modified.**');
   }
 
   return report.join('\n');
