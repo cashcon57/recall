@@ -5,6 +5,15 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at TEXT NOT NULL
 );
 
+-- Fresh installs use this full current schema, so mark historical migrations
+-- applied. Older installs still apply numbered migration files via the updater.
+INSERT INTO schema_migrations(version, applied_at) VALUES
+  ('0000', NOW()),
+  ('0002', NOW()),
+  ('0003', NOW()),
+  ('0004', NOW())
+ON CONFLICT (version) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
   key TEXT UNIQUE NOT NULL,

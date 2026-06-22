@@ -162,7 +162,7 @@ export interface VerifyMemoryInput {
   source_hash?: string | null;
   verified_at: string;
   expires_at?: string | null;
-  status: MemoryStatus;
+  status?: MemoryStatus;
 }
 
 export interface SupersedeMemoryInput extends StoreMemoryInput {

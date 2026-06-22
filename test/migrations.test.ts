@@ -34,6 +34,18 @@ function expectSchemaMigrationsTable(contents: string) {
   expect(contents).toMatch(/applied_at\s+TEXT\s+NOT\s+NULL/i);
 }
 
+function expectFreshSchemaSeedsCurrentMigrations(contents: string, dialect: 'sqlite' | 'pg') {
+  if (dialect === 'sqlite') {
+    expect(contents).toMatch(/INSERT\s+OR\s+IGNORE\s+INTO\s+schema_migrations/i);
+  } else {
+    expect(contents).toMatch(/INSERT\s+INTO\s+schema_migrations/i);
+    expect(contents).toMatch(/ON\s+CONFLICT\s*\(version\)\s+DO\s+NOTHING/i);
+  }
+  for (const version of ['0000', '0002', '0003', '0004']) {
+    expect(contents).toContain(`'${version}'`);
+  }
+}
+
 function expectProvenanceColumns(contents: string, dialect: 'sqlite' | 'pg') {
   for (const column of provenanceColumns) {
     expect(contents, `missing column ${column.name}`).toMatch(column[dialect]);
@@ -55,6 +67,12 @@ describe('schema migrations', () => {
     for (const path of ['schema.sql', 'local/setup.sql', 'docker/setup.sql']) {
       expectSchemaMigrationsTable(sql(path));
     }
+  });
+
+  test('fresh install schemas mark bundled historical migrations as applied', () => {
+    expectFreshSchemaSeedsCurrentMigrations(sql('schema.sql'), 'sqlite');
+    expectFreshSchemaSeedsCurrentMigrations(sql('local/setup.sql'), 'sqlite');
+    expectFreshSchemaSeedsCurrentMigrations(sql('docker/setup.sql'), 'pg');
   });
 
   test('fresh SQLite/D1 schemas include provenance/lifecycle columns and indexes', () => {

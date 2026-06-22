@@ -555,7 +555,6 @@ export function validateVerifyMemoryInput(args: Record<string, unknown>): Verify
   const result: VerifyMemoryInput = {
     key: validateRequiredKeyRef(args.key, 'key'),
     verified_at: new Date().toISOString(),
-    status: args.status === undefined ? 'active' : validateMemoryStatus(args.status),
   };
 
   if (args.verified_at !== undefined && args.verified_at !== 'auto-now') {
@@ -573,6 +572,7 @@ export function validateVerifyMemoryInput(args: Record<string, unknown>): Verify
   if (hasOwn(args, 'source_title')) result.source_title = validateNullableString(args.source_title, 'source_title', MAX_SOURCE_TITLE_LEN);
   if (hasOwn(args, 'source_hash')) result.source_hash = validateNullableString(args.source_hash, 'source_hash');
   if (hasOwn(args, 'expires_at')) result.expires_at = validateIsoDateString(args.expires_at, 'expires_at');
+  if (hasOwn(args, 'status')) result.status = validateMemoryStatus(args.status);
 
   return result;
 }
@@ -1199,9 +1199,14 @@ async function verifyMemory(input: VerifyMemoryInput, adapter: RecallAdapter): P
   const existing = await adapter.query('SELECT id FROM memories WHERE key = ?', [input.key]);
   if (!existing.length) return textResult(`Memory "${input.key}" not found.`, true);
 
-  const assignments: string[] = ['verified_at = ?', 'status = ?', 'updated_at = ?'];
+  const assignments: string[] = ['verified_at = ?', 'updated_at = ?'];
   const now = new Date().toISOString();
-  const params: unknown[] = [input.verified_at, input.status, now];
+  const params: unknown[] = [input.verified_at, now];
+
+  if (input.status !== undefined) {
+    assignments.push('status = ?');
+    params.push(input.status);
+  }
 
   const optionalFields: Array<keyof VerifyMemoryInput> = [
     'confidence',
@@ -1223,7 +1228,8 @@ async function verifyMemory(input: VerifyMemoryInput, adapter: RecallAdapter): P
   params.push(input.key);
 
   await adapter.query(`UPDATE memories SET ${assignments.join(', ')} WHERE key = ?`, params);
-  return textResult(`Verified memory "${input.key}" at ${input.verified_at} with status ${input.status}.`);
+  const statusNote = input.status === undefined ? 'existing status preserved' : `status ${input.status}`;
+  return textResult(`Verified memory "${input.key}" at ${input.verified_at} with ${statusNote}.`);
 }
 
 async function supersedeMemory(input: SupersedeMemoryInput, adapter: RecallAdapter): Promise<McpToolResult> {

@@ -32,7 +32,7 @@ describe('v2.2 phase 4 lifecycle tools', () => {
     expect(retrieved).toContain('Warning: stale memory; verify before relying on it.');
   });
 
-  test('verify_memory defaults verified_at/status active and updates provided provenance/confidence', async () => {
+  test('verify_memory defaults verified_at and preserves status while updating provided provenance/confidence', async () => {
     await store({ key: 'phase4-verify', content: 'phase four verify defaults', author: 'test', status: 'stale' });
 
     const before = Date.now();
@@ -51,7 +51,7 @@ describe('v2.2 phase 4 lifecycle tools', () => {
     expect(verify.isError).toBeFalsy();
     const row = adapter.memories.get('phase4-verify');
     expect(row).toMatchObject({
-      status: 'active',
+      status: 'stale',
       confidence: 0.91,
       source_type: 'code',
       source_path: 'src/tools.ts',
@@ -93,8 +93,18 @@ describe('v2.2 phase 4 lifecycle tools', () => {
       source_hash: 'sha256:original',
       confidence: 0.8,
       verified_at: '2026-06-22T12:00:00.000Z',
-      status: 'active',
+      status: 'stale',
     });
+  });
+
+  test('verify_memory can explicitly reactivate when status is provided', async () => {
+    await store({ key: 'phase4-reactivate', content: 'phase four verify explicit active', author: 'test', status: 'stale' });
+
+    const verify = await result('verify_memory', { key: 'phase4-reactivate', status: 'active' });
+
+    expect(verify.isError).toBeFalsy();
+    expect(verify.content[0].text).toContain('status active');
+    expect(adapter.memories.get('phase4-reactivate')).toMatchObject({ status: 'active' });
   });
 
   test('supersede_memory creates new row, marks old, and retrieval lifecycle behavior works', async () => {
