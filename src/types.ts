@@ -16,6 +16,9 @@ export interface Env {
 // --- Domain types ---
 
 export type MemoryType = 'episodic' | 'semantic' | 'procedural';
+export type MemorySourceType = 'manual' | 'chat' | 'doc' | 'code' | 'issue' | 'pull_request' | 'log' | 'web' | 'inferred';
+export type MemoryStatus = 'active' | 'stale' | 'superseded' | 'deprecated';
+export type RetrieveFormat = 'text' | 'json';
 
 export interface Memory {
   id: string;
@@ -26,6 +29,19 @@ export interface Memory {
   author: string;
   memory_type: MemoryType;
   namespace: string | null;
+  source_type: MemorySourceType;
+  source_url: string | null;
+  source_path: string | null;
+  source_line_start: number | null;
+  source_line_end: number | null;
+  source_title: string | null;
+  source_hash: string | null;
+  status: MemoryStatus;
+  confidence: number;
+  verified_at: string | null;
+  expires_at: string | null;
+  supersedes_key: string | null;
+  superseded_by_key: string | null;
   created_at: string;
   updated_at: string;
   accessed_at: string;
@@ -42,6 +58,19 @@ export interface MemoryRow {
   author: string;
   memory_type: MemoryType;
   namespace: string | null;
+  source_type: MemorySourceType;
+  source_url: string | null;
+  source_path: string | null;
+  source_line_start: number | null;
+  source_line_end: number | null;
+  source_title: string | null;
+  source_hash: string | null;
+  status: MemoryStatus;
+  confidence: number;
+  verified_at: string | null;
+  expires_at: string | null;
+  supersedes_key: string | null;
+  superseded_by_key: string | null;
   created_at: string;
   updated_at: string;
   accessed_at: string;
@@ -101,6 +130,18 @@ export interface StoreMemoryInput {
   author: string;
   memory_type: MemoryType;
   namespace: string | null;
+  source_type: MemorySourceType;
+  source_url: string | null;
+  source_path: string | null;
+  source_line_start: number | null;
+  source_line_end: number | null;
+  source_title: string | null;
+  source_hash: string | null;
+  status: MemoryStatus;
+  confidence: number;
+  verified_at: string | null;
+  expires_at: string | null;
+  supersedes?: string;
 }
 
 export interface GetRelatedMemoriesInput {
@@ -115,6 +156,9 @@ export interface RetrieveMemoryInput {
   min_importance?: number;
   tags?: string[];
   namespace?: string;
+  include_statuses?: MemoryStatus[];
+  include_provenance?: boolean;
+  format?: RetrieveFormat;
 }
 
 export interface ListMemoriesInput {
@@ -123,6 +167,8 @@ export interface ListMemoriesInput {
   namespace?: string;
   limit?: number;
   offset?: number;
+  status?: MemoryStatus;
+  source_type?: MemorySourceType;
 }
 
 export interface DeleteMemoryInput {

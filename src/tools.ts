@@ -2,6 +2,9 @@ import type {
   Memory,
   MemoryRow,
   MemoryType,
+  MemorySourceType,
+  MemoryStatus,
+  RetrieveFormat,
   McpToolDefinition,
   McpToolResult,
   StoreMemoryInput,
@@ -62,6 +65,31 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
           description:
             'Optional project/scope identifier. Memories with a namespace are only returned when retrieve_memory/list_memories filter by the same namespace. Use to isolate memories across projects. Format: alphanumeric, hyphens, underscores, dots.',
         },
+        source_type: {
+          type: 'string',
+          enum: ['manual', 'chat', 'doc', 'code', 'issue', 'pull_request', 'log', 'web', 'inferred'],
+          description: 'Provenance source type for this memory (default: manual).',
+        },
+        source_url: { type: 'string', description: 'Optional source URL for provenance.' },
+        source_path: { type: 'string', description: 'Optional source file/path for provenance.' },
+        source_line_start: { type: 'integer', minimum: 1, description: 'Optional starting line number in the source.' },
+        source_line_end: { type: 'integer', minimum: 1, description: 'Optional ending line number in the source.' },
+        source_title: { type: 'string', description: 'Optional human-readable source title.' },
+        source_hash: { type: 'string', description: 'Optional content/source hash for provenance.' },
+        status: {
+          type: 'string',
+          enum: ['active', 'stale', 'superseded', 'deprecated'],
+          description: 'Lifecycle status for this memory (default: active).',
+        },
+        confidence: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description: 'Confidence score for this memory, 0.0–1.0 (default: 0.75).',
+        },
+        verified_at: { type: 'string', description: 'Optional ISO 8601 timestamp when this memory was verified.' },
+        expires_at: { type: 'string', description: 'Optional ISO 8601 timestamp when this memory should expire.' },
+        supersedes: { type: 'string', description: 'Optional key of a memory this new memory supersedes.' },
       },
       required: ['key', 'content', 'author'],
     },
@@ -99,6 +127,20 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
           description:
             'Filter to memories stored in this namespace. Omit to search across all memories (including unnamespaced ones). When set, unnamespaced memories are NOT returned.',
         },
+        include_statuses: {
+          type: 'array',
+          items: { type: 'string', enum: ['active', 'stale', 'superseded', 'deprecated'] },
+          description: 'Optional lifecycle statuses to include in retrieval (validated now; filtering behavior is not implemented in Phase 2).',
+        },
+        include_provenance: {
+          type: 'boolean',
+          description: 'Whether to include provenance metadata in retrieval output (validated now; output behavior is not implemented in Phase 2).',
+        },
+        format: {
+          type: 'string',
+          enum: ['text', 'json'],
+          description: 'Retrieval output format (validated now; JSON behavior is not implemented in Phase 2).',
+        },
       },
       required: ['query'],
     },
@@ -126,6 +168,16 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
           type: 'number',
           minimum: 0,
           description: 'Number of results to skip (default 0)',
+        },
+        status: {
+          type: 'string',
+          enum: ['active', 'stale', 'superseded', 'deprecated'],
+          description: 'Filter by lifecycle status (validated now; filtering behavior is not implemented in Phase 2).',
+        },
+        source_type: {
+          type: 'string',
+          enum: ['manual', 'chat', 'doc', 'code', 'issue', 'pull_request', 'log', 'web', 'inferred'],
+          description: 'Filter by provenance source type (validated now; filtering behavior is not implemented in Phase 2).',
         },
       },
     },
@@ -225,8 +277,28 @@ const MAX_TAGS = 20;
 const MAX_QUERY_LEN = 1000;
 
 const VALID_MEMORY_TYPES = new Set<MemoryType>(['episodic', 'semantic', 'procedural']);
+export const VALID_SOURCE_TYPES = new Set<MemorySourceType>([
+  'manual',
+  'chat',
+  'doc',
+  'code',
+  'issue',
+  'pull_request',
+  'log',
+  'web',
+  'inferred',
+]);
+export const VALID_MEMORY_STATUSES = new Set<MemoryStatus>([
+  'active',
+  'stale',
+  'superseded',
+  'deprecated',
+]);
+const VALID_RETRIEVE_FORMATS = new Set<RetrieveFormat>(['text', 'json']);
 
 const MAX_NAMESPACE_LEN = 128;
+const MAX_SOURCE_FIELD_LEN = 2048;
+const MAX_SOURCE_TITLE_LEN = 512;
 
 function validateNamespace(raw: unknown): string | null {
   if (raw === undefined || raw === null || raw === '') return null;
@@ -241,7 +313,78 @@ function validateNamespace(raw: unknown): string | null {
   return trimmed;
 }
 
-function validateStoreInput(args: Record<string, unknown>): StoreMemoryInput {
+export function validateSourceType(raw: unknown, field = 'source_type'): MemorySourceType {
+  if (typeof raw !== 'string' || !VALID_SOURCE_TYPES.has(raw as MemorySourceType)) {
+    throw new Error(`${field} must be one of: ${[...VALID_SOURCE_TYPES].join(', ')}`);
+  }
+  return raw as MemorySourceType;
+}
+
+export function validateMemoryStatus(raw: unknown, field = 'status'): MemoryStatus {
+  if (typeof raw !== 'string' || !VALID_MEMORY_STATUSES.has(raw as MemoryStatus)) {
+    throw new Error(`${field} must be one of: ${[...VALID_MEMORY_STATUSES].join(', ')}`);
+  }
+  return raw as MemoryStatus;
+}
+
+export function validateConfidence(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || raw > 1) {
+    throw new Error('confidence must be a number between 0.0 and 1.0');
+  }
+  return Math.round(raw * 100) / 100;
+}
+
+export function validateIsoDateString(raw: unknown, field: string): string | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (typeof raw !== 'string') throw new Error(`${field} must be an ISO 8601 date string`);
+  const trimmed = raw.trim();
+  const parsed = Date.parse(trimmed);
+  if (!trimmed || Number.isNaN(parsed)) throw new Error(`${field} must be an ISO 8601 date string`);
+  return trimmed;
+}
+
+function validateNullableString(raw: unknown, field: string, maxLen = MAX_SOURCE_FIELD_LEN): string | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (typeof raw !== 'string' || raw.length > maxLen) {
+    throw new Error(`${field} must be a string (max ${maxLen} chars)`);
+  }
+  const trimmed = raw.trim();
+  return trimmed || null;
+}
+
+function validateOptionalLine(raw: unknown, field: string): number | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
+    throw new Error(`${field} must be a positive integer`);
+  }
+  return raw;
+}
+
+export function validateOptionalLineRange(args: Record<string, unknown>): {
+  source_line_start: number | null;
+  source_line_end: number | null;
+} {
+  const source_line_start = validateOptionalLine(args.source_line_start, 'source_line_start');
+  const source_line_end = validateOptionalLine(args.source_line_end, 'source_line_end');
+  if (source_line_start !== null && source_line_end !== null && source_line_start > source_line_end) {
+    throw new Error('source_line_start must be less than or equal to source_line_end');
+  }
+  return { source_line_start, source_line_end };
+}
+
+export function validateOptionalKeyRef(raw: unknown, field: string): string | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_KEY_LEN) {
+    throw new Error(`${field} must be a non-empty string (max ${MAX_KEY_LEN} chars)`);
+  }
+  const trimmed = raw.trim();
+  if (!KEY_PATTERN.test(trimmed)) {
+    throw new Error(`${field} must contain only alphanumeric characters, hyphens, underscores, and dots`);
+  }
+  return trimmed;
+}
+
+export function validateStoreInput(args: Record<string, unknown>): StoreMemoryInput {
   const { key, content, tags, importance, author, memory_type, namespace } = args;
 
   if (typeof key !== 'string' || key.length === 0 || key.length > MAX_KEY_LEN) {
@@ -287,7 +430,10 @@ function validateStoreInput(args: Record<string, unknown>): StoreMemoryInput {
     validatedMemoryType = memory_type as MemoryType;
   }
 
-  return {
+  const lineRange = validateOptionalLineRange(args);
+  const supersedes = validateOptionalKeyRef(args.supersedes, 'supersedes');
+
+  const result: StoreMemoryInput = {
     key: key.trim(),
     content: content.trim(),
     tags: validatedTags,
@@ -295,10 +441,24 @@ function validateStoreInput(args: Record<string, unknown>): StoreMemoryInput {
     author: author.trim(),
     memory_type: validatedMemoryType,
     namespace: validateNamespace(namespace),
+    source_type: args.source_type === undefined ? 'manual' : validateSourceType(args.source_type),
+    source_url: validateNullableString(args.source_url, 'source_url'),
+    source_path: validateNullableString(args.source_path, 'source_path'),
+    source_line_start: lineRange.source_line_start,
+    source_line_end: lineRange.source_line_end,
+    source_title: validateNullableString(args.source_title, 'source_title', MAX_SOURCE_TITLE_LEN),
+    source_hash: validateNullableString(args.source_hash, 'source_hash'),
+    status: args.status === undefined ? 'active' : validateMemoryStatus(args.status),
+    confidence: args.confidence === undefined ? 0.75 : validateConfidence(args.confidence),
+    verified_at: validateIsoDateString(args.verified_at, 'verified_at'),
+    expires_at: validateIsoDateString(args.expires_at, 'expires_at'),
   };
+
+  if (supersedes !== undefined) result.supersedes = supersedes;
+  return result;
 }
 
-function validateRetrieveInput(args: Record<string, unknown>): RetrieveMemoryInput {
+export function validateRetrieveInput(args: Record<string, unknown>): RetrieveMemoryInput {
   const { query, limit, min_importance, tags, namespace } = args;
 
   if (typeof query !== 'string' || query.length === 0 || query.length > MAX_QUERY_LEN) {
@@ -327,13 +487,32 @@ function validateRetrieveInput(args: Record<string, unknown>): RetrieveMemoryInp
     });
   }
 
+  if (args.include_statuses !== undefined) {
+    if (!Array.isArray(args.include_statuses)) {
+      throw new Error('include_statuses must be an array of memory statuses');
+    }
+    result.include_statuses = args.include_statuses.map((s) => validateMemoryStatus(s, 'include_statuses'));
+  }
+  if (args.include_provenance !== undefined) {
+    if (typeof args.include_provenance !== 'boolean') {
+      throw new Error('include_provenance must be a boolean');
+    }
+    result.include_provenance = args.include_provenance;
+  }
+  if (args.format !== undefined) {
+    if (typeof args.format !== 'string' || !VALID_RETRIEVE_FORMATS.has(args.format as RetrieveFormat)) {
+      throw new Error('format must be "text" or "json"');
+    }
+    result.format = args.format as RetrieveFormat;
+  }
+
   const ns = validateNamespace(namespace);
   if (ns) result.namespace = ns;
 
   return result;
 }
 
-function validateListInput(args: Record<string, unknown>): ListMemoriesInput {
+export function validateListInput(args: Record<string, unknown>): ListMemoriesInput {
   const result: ListMemoriesInput = {};
   if (args.tag !== undefined) {
     if (typeof args.tag !== 'string') throw new Error('tag must be a string');
@@ -354,6 +533,12 @@ function validateListInput(args: Record<string, unknown>): ListMemoriesInput {
       throw new Error('offset must be a non-negative integer');
     }
     result.offset = args.offset;
+  }
+  if (args.status !== undefined) {
+    result.status = validateMemoryStatus(args.status);
+  }
+  if (args.source_type !== undefined) {
+    result.source_type = validateSourceType(args.source_type);
   }
   const ns = validateNamespace(args.namespace);
   if (ns) result.namespace = ns;
