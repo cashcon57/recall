@@ -79,6 +79,11 @@ describe('v2.2 lifecycle/provenance validation', () => {
       source_line_start: 42,
       source_line_end: 41,
     })).toThrow(/source_line_start/i);
+
+    expect(() => validateStoreInput({
+      ...baseStore,
+      source_line_end: 41,
+    })).toThrow(/source_line_start/i);
   });
 
   test('store_memory rejects invalid date', () => {

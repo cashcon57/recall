@@ -448,6 +448,9 @@ export function validateOptionalLineRange(args: Record<string, unknown>): {
 } {
   const source_line_start = validateOptionalLine(args.source_line_start, 'source_line_start');
   const source_line_end = validateOptionalLine(args.source_line_end, 'source_line_end');
+  if (source_line_start === null && source_line_end !== null) {
+    throw new Error('source_line_start must be provided if source_line_end is specified');
+  }
   if (source_line_start !== null && source_line_end !== null && source_line_start > source_line_end) {
     throw new Error('source_line_start must be less than or equal to source_line_end');
   }

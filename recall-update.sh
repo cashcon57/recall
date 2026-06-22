@@ -14,6 +14,8 @@ INSTALL_CRON=""
 YES=0
 
 BACKUP_DIR=".recall-update"
+SECURE_TMP_DIR="$(mktemp -d -t recall-update.XXXXXX)"
+trap 'rm -rf "$SECURE_TMP_DIR"' EXIT
 PREVIOUS_REVISION_FILE="$BACKUP_DIR/previous-revision"
 PROTECTED_PATHS=(
   "wrangler.toml"
@@ -146,14 +148,14 @@ migration_files() {
 
 query_applied_migrations() {
   local db_name="$1"
-  npx_wrangler d1 execute "$db_name" --remote --command "SELECT version FROM schema_migrations ORDER BY version;" 2>/tmp/recall-update-d1.err \
+  npx_wrangler d1 execute "$db_name" --remote --command "SELECT version FROM schema_migrations ORDER BY version;" 2>"$SECURE_TMP_DIR/d1.err" \
     | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p'
 }
 
 pending_migrations() {
   local db_name applied tmp file base version
   db_name="${1:-}"
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$SECURE_TMP_DIR/pending.XXXXXX")"
   if [[ -n "$db_name" ]] && query_applied_migrations "$db_name" >"$tmp"; then
     :
   else
@@ -221,8 +223,8 @@ print_migration_status() {
     fi
   else
     warn "could not query D1 schema_migrations; continuing without remote migration status"
-    if [[ -s /tmp/recall-update-d1.err ]]; then
-      sed 's/^/  wrangler: /' /tmp/recall-update-d1.err >&2 || true
+    if [[ -s "$SECURE_TMP_DIR/d1.err" ]]; then
+      sed 's/^/  wrangler: /' "$SECURE_TMP_DIR/d1.err" >&2 || true
     fi
     log "Migration files present:"
     migration_files | sed 's/^/  /' || true
@@ -326,7 +328,7 @@ run_doctor() {
     warn ".recall-api-key missing; MCP smoke tests will be skipped unless MEMORY_API_KEY is exported"
   fi
   if [[ -f wrangler.toml ]] && ( [[ -x node_modules/.bin/wrangler ]] || command -v npx >/dev/null 2>&1 ); then
-    if npx_wrangler secret list 2>/tmp/recall-update-secret-list.err | grep -q 'MEMORY_API_KEY'; then
+    if npx_wrangler secret list 2>"$SECURE_TMP_DIR/secret-list.err" | grep -q 'MEMORY_API_KEY'; then
       log "Cloudflare secret MEMORY_API_KEY: present (name only)"
     else
       warn "could not confirm MEMORY_API_KEY via wrangler secret list (not logged in, no permissions, or secret absent)"
@@ -337,10 +339,10 @@ run_doctor() {
   if [[ -n "$url" ]]; then
     log "Health URL detected: ${url%/}/health"
     if command -v curl >/dev/null 2>&1; then
-      curl -fsS --max-time 10 "${url%/}/health" >/tmp/recall-update-health.json \
+      curl -fsS --max-time 10 "${url%/}/health" >"$SECURE_TMP_DIR/health.json" \
         && log "/health: reachable" \
         || warn "/health check failed"
-      rm -f /tmp/recall-update-health.json
+      rm -f "$SECURE_TMP_DIR/health.json"
     fi
   else
     warn "worker URL not detectable; set RECALL_WORKER_URL=https://your-worker.example.com for health checks"
@@ -395,7 +397,11 @@ smoke_test() {
     err "worker URL not detectable; set RECALL_WORKER_URL=https://your-worker.example.com so --apply can run required smoke tests"
     return 1
   fi
-  run curl -fsS --max-time 10 "${url%/}/health" >/dev/null
+  if [[ "$mode" == "optional" ]]; then
+    run curl -fsS --max-time 10 "${url%/}/health" >/dev/null || { warn "optional health check failed"; return 0; }
+  else
+    run curl -fsS --max-time 10 "${url%/}/health" >/dev/null
+  fi
   if [[ -n "${MEMORY_API_KEY:-}" ]]; then
     key="$MEMORY_API_KEY"
   elif [[ -f .recall-api-key ]]; then
@@ -414,9 +420,9 @@ smoke_test() {
     -H "Authorization: Bearer ${key}" \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
-    "$auth_url" >/tmp/recall-update-tools.json
-  node -e "const fs=require('fs'); const j=JSON.parse(fs.readFileSync('/tmp/recall-update-tools.json','utf8')); if (j.error) throw new Error(JSON.stringify(j.error)); const n=j.result?.tools?.length; if (!n) throw new Error('tools/list returned no tools'); console.log('tools/list:', n, 'tools');"
-  rm -f /tmp/recall-update-tools.json
+    "$auth_url" >"$SECURE_TMP_DIR/tools.json"
+  RECALL_UPDATE_TOOLS_JSON="$SECURE_TMP_DIR/tools.json" node -e "const fs=require('fs'); const j=JSON.parse(fs.readFileSync(process.env.RECALL_UPDATE_TOOLS_JSON,'utf8')); if (j.error) throw new Error(JSON.stringify(j.error)); const n=j.result?.tools?.length; if (!n) throw new Error('tools/list returned no tools'); console.log('tools/list:', n, 'tools');"
+  rm -f "$SECURE_TMP_DIR/tools.json"
 }
 run_apply() {
   require_cmd git
@@ -481,7 +487,7 @@ install_cron_weekly() {
   fi
   require_cmd crontab
   mkdir -p "$BACKUP_DIR"
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$SECURE_TMP_DIR/pending.XXXXXX")"
   crontab -l >"$tmp" 2>/dev/null || true
   if grep -Fq "# recall-update weekly check" "$tmp"; then
     warn "recall-update weekly cron line already present; leaving crontab unchanged"
