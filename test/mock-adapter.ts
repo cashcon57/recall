@@ -107,6 +107,14 @@ export class MockAdapter implements RecallAdapter {
       rows = rows.filter(r => r.namespace === params[pIdx]);
       pIdx++;
     }
+    if (s.includes('status = ?')) {
+      rows = rows.filter(r => r.status === params[pIdx]);
+      pIdx++;
+    }
+    if (s.includes('source_type = ?')) {
+      rows = rows.filter(r => r.source_type === params[pIdx]);
+      pIdx++;
+    }
     return rows;
   }
 
@@ -120,9 +128,85 @@ export class MockAdapter implements RecallAdapter {
     const s = sql.trim().toLowerCase();
 
     if (s.startsWith('insert into memories ') || s.startsWith('insert into memories(')) {
-      // Param order: id, key, content, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at
-      const [id, key, content, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at] =
-        params as [string, string, string, string, number, string, string, string | null | undefined, string, string, string];
+      let id: string;
+      let key: string;
+      let content: string;
+      let tags: string;
+      let importance: number;
+      let author: string;
+      let memory_type: string;
+      let namespace: string | null | undefined;
+      let source_type: string | null | undefined = 'manual';
+      let source_url: string | null | undefined = null;
+      let source_path: string | null | undefined = null;
+      let source_line_start: number | null | undefined = null;
+      let source_line_end: number | null | undefined = null;
+      let source_title: string | null | undefined = null;
+      let source_hash: string | null | undefined = null;
+      let status: string | null | undefined = 'active';
+      let confidence: number | null | undefined = 0.75;
+      let verified_at: string | null | undefined = null;
+      let expires_at: string | null | undefined = null;
+      let supersedes_key: string | null | undefined = null;
+      let created_at: string;
+      let updated_at: string;
+      let accessed_at: string;
+
+      if (params.length >= 23) {
+        [
+          id,
+          key,
+          content,
+          tags,
+          importance,
+          author,
+          memory_type,
+          namespace,
+          source_type,
+          source_url,
+          source_path,
+          source_line_start,
+          source_line_end,
+          source_title,
+          source_hash,
+          status,
+          confidence,
+          verified_at,
+          expires_at,
+          supersedes_key,
+          created_at,
+          updated_at,
+          accessed_at,
+        ] = params as [
+          string,
+          string,
+          string,
+          string,
+          number,
+          string,
+          string,
+          string | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          number | null | undefined,
+          number | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          number | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          string,
+          string,
+          string,
+        ];
+      } else {
+        [id, key, content, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at] =
+          params as [string, string, string, string, number, string, string, string | null | undefined, string, string, string];
+      }
+
       const existing = this.memories.get(key);
       this.memories.set(key, {
         id: existing?.id ?? id,
@@ -133,18 +217,18 @@ export class MockAdapter implements RecallAdapter {
         author,
         memory_type,
         namespace: namespace ?? null,
-        source_type: 'manual',
-        source_url: null,
-        source_path: null,
-        source_line_start: null,
-        source_line_end: null,
-        source_title: null,
-        source_hash: null,
-        status: 'active',
-        confidence: 0.75,
-        verified_at: null,
-        expires_at: null,
-        supersedes_key: null,
+        source_type: source_type ?? 'manual',
+        source_url: source_url ?? null,
+        source_path: source_path ?? null,
+        source_line_start: source_line_start ?? null,
+        source_line_end: source_line_end ?? null,
+        source_title: source_title ?? null,
+        source_hash: source_hash ?? null,
+        status: status ?? 'active',
+        confidence: confidence ?? 0.75,
+        verified_at: verified_at ?? null,
+        expires_at: expires_at ?? null,
+        supersedes_key: supersedes_key ?? null,
         superseded_by_key: null,
         created_at: existing?.created_at ?? created_at,
         updated_at,

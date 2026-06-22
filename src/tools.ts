@@ -130,16 +130,16 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
         include_statuses: {
           type: 'array',
           items: { type: 'string', enum: ['active', 'stale', 'superseded', 'deprecated'] },
-          description: 'Optional lifecycle statuses to include in retrieval (validated now; filtering behavior is not implemented in Phase 2).',
+          description: 'Lifecycle statuses to include in retrieval (default: active and stale).',
         },
         include_provenance: {
           type: 'boolean',
-          description: 'Whether to include provenance metadata in retrieval output (validated now; output behavior is not implemented in Phase 2).',
+          description: 'Whether to include provenance metadata in retrieval text output (default: true).',
         },
         format: {
           type: 'string',
           enum: ['text', 'json'],
-          description: 'Retrieval output format (validated now; JSON behavior is not implemented in Phase 2).',
+          description: 'Retrieval output format (default: text).',
         },
       },
       required: ['query'],
@@ -172,12 +172,12 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
         status: {
           type: 'string',
           enum: ['active', 'stale', 'superseded', 'deprecated'],
-          description: 'Filter by lifecycle status (validated now; filtering behavior is not implemented in Phase 2).',
+          description: 'Filter by lifecycle status.',
         },
         source_type: {
           type: 'string',
           enum: ['manual', 'chat', 'doc', 'code', 'issue', 'pull_request', 'log', 'web', 'inferred'],
-          description: 'Filter by provenance source type (validated now; filtering behavior is not implemented in Phase 2).',
+          description: 'Filter by provenance source type.',
         },
       },
     },
@@ -694,8 +694,116 @@ function rrfMerge(
   return scores;
 }
 
-function rowToMemory(row: MemoryRow): Memory {
-  return { ...row, tags: JSON.parse(row.tags) as string[] };
+function rowToMemory(row: MemoryRow | (Partial<MemoryRow> & Pick<MemoryRow, 'id' | 'key' | 'content' | 'tags' | 'importance' | 'author' | 'memory_type'>)): Memory {
+  return {
+    id: row.id,
+    key: row.key,
+    content: row.content,
+    tags: JSON.parse(row.tags) as string[],
+    importance: row.importance,
+    author: row.author,
+    memory_type: row.memory_type,
+    namespace: row.namespace ?? null,
+    source_type: row.source_type ?? 'manual',
+    source_url: row.source_url ?? null,
+    source_path: row.source_path ?? null,
+    source_line_start: row.source_line_start ?? null,
+    source_line_end: row.source_line_end ?? null,
+    source_title: row.source_title ?? null,
+    source_hash: row.source_hash ?? null,
+    status: row.status ?? 'active',
+    confidence: row.confidence ?? 0.75,
+    verified_at: row.verified_at ?? null,
+    expires_at: row.expires_at ?? null,
+    supersedes_key: row.supersedes_key ?? null,
+    superseded_by_key: row.superseded_by_key ?? null,
+    created_at: row.created_at ?? new Date(0).toISOString(),
+    updated_at: row.updated_at ?? new Date(0).toISOString(),
+    accessed_at: row.accessed_at ?? row.updated_at ?? row.created_at ?? new Date(0).toISOString(),
+    access_count: row.access_count ?? 0,
+  };
+}
+
+type RetrievalResult = { memory: Memory; combinedScore: number; rerankerScore: number };
+
+function memoryProvenance(memory: Memory) {
+  return {
+    source_type: memory.source_type,
+    source_url: memory.source_url,
+    source_path: memory.source_path,
+    source_line_start: memory.source_line_start,
+    source_line_end: memory.source_line_end,
+    source_title: memory.source_title,
+    source_hash: memory.source_hash,
+  };
+}
+
+function memoryLifecycle(memory: Memory) {
+  return {
+    status: memory.status,
+    confidence: memory.confidence,
+    verified_at: memory.verified_at,
+    expires_at: memory.expires_at,
+  };
+}
+
+function memorySupersession(memory: Memory) {
+  return {
+    supersedes_key: memory.supersedes_key,
+    superseded_by_key: memory.superseded_by_key,
+  };
+}
+
+function memoryWarnings(memory: Memory): string[] {
+  const warnings: string[] = [];
+  if (memory.status === 'stale') warnings.push('Warning: stale memory; verify before relying on it.');
+  if (memory.status === 'superseded' && memory.superseded_by_key) {
+    warnings.push(`Warning: superseded by ${memory.superseded_by_key}; prefer the replacement.`);
+  }
+  if (memory.confidence < 0.5) warnings.push(`Warning: low confidence (${memory.confidence}).`);
+  return warnings;
+}
+
+function provenanceLine(memory: Memory): string | null {
+  const hasSpecificSource = Boolean(memory.source_url || memory.source_path || memory.source_title || memory.source_hash || memory.source_line_start || memory.source_line_end);
+  if (memory.source_type === 'manual' && !hasSpecificSource) return null;
+
+  const parts = [`type: ${memory.source_type}`];
+  if (memory.source_title) parts.push(`title: ${memory.source_title}`);
+  if (memory.source_url) parts.push(`url: ${memory.source_url}`);
+  if (memory.source_path) {
+    let path = memory.source_path;
+    if (memory.source_line_start !== null && memory.source_line_end !== null) path += `:${memory.source_line_start}-${memory.source_line_end}`;
+    else if (memory.source_line_start !== null) path += `:${memory.source_line_start}`;
+    parts.push(`path: ${path}`);
+  } else if (memory.source_line_start !== null || memory.source_line_end !== null) {
+    const range = memory.source_line_start !== null && memory.source_line_end !== null
+      ? `${memory.source_line_start}-${memory.source_line_end}`
+      : String(memory.source_line_start ?? memory.source_line_end);
+    parts.push(`lines: ${range}`);
+  }
+  if (memory.source_hash) parts.push(`hash: ${memory.source_hash}`);
+  return `   Source: ${parts.join(' | ')}`;
+}
+
+function formatJsonResults(results: RetrievalResult[]): string {
+  return JSON.stringify({
+    results: results.map((r) => ({
+      key: r.memory.key,
+      content: r.memory.content,
+      score: r.combinedScore,
+      reranker_score: r.rerankerScore,
+      importance: r.memory.importance,
+      status: r.memory.status,
+      confidence: r.memory.confidence,
+      tags: r.memory.tags,
+      namespace: r.memory.namespace,
+      provenance: memoryProvenance(r.memory),
+      lifecycle: memoryLifecycle(r.memory),
+      supersession: memorySupersession(r.memory),
+      warnings: memoryWarnings(r.memory),
+    })),
+  }, null, 2);
 }
 
 function textResult(text: string, isError = false): McpToolResult {
@@ -775,8 +883,14 @@ async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Pro
   // 1. D1 — source of truth. If this fails, nothing is stored anywhere.
   try {
     await adapter.query(
-      `INSERT INTO memories (id, key, content, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at, access_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      `INSERT INTO memories (
+         id, key, content, tags, importance, author, memory_type, namespace,
+         source_type, source_url, source_path, source_line_start, source_line_end,
+         source_title, source_hash, status, confidence, verified_at, expires_at,
+         supersedes_key, superseded_by_key,
+         created_at, updated_at, accessed_at, access_count
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0)
        ON CONFLICT (key) DO UPDATE SET
          content = excluded.content,
          tags = excluded.tags,
@@ -784,8 +898,45 @@ async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Pro
          author = excluded.author,
          memory_type = excluded.memory_type,
          namespace = excluded.namespace,
+         source_type = excluded.source_type,
+         source_url = excluded.source_url,
+         source_path = excluded.source_path,
+         source_line_start = excluded.source_line_start,
+         source_line_end = excluded.source_line_end,
+         source_title = excluded.source_title,
+         source_hash = excluded.source_hash,
+         status = excluded.status,
+         confidence = excluded.confidence,
+         verified_at = excluded.verified_at,
+         expires_at = excluded.expires_at,
+         supersedes_key = excluded.supersedes_key,
+         superseded_by_key = NULL,
          updated_at = excluded.updated_at`,
-      [id, input.key, input.content, JSON.stringify(input.tags), input.importance, input.author, input.memory_type, input.namespace, now, now, now],
+      [
+        id,
+        input.key,
+        input.content,
+        JSON.stringify(input.tags),
+        input.importance,
+        input.author,
+        input.memory_type,
+        input.namespace,
+        input.source_type,
+        input.source_url,
+        input.source_path,
+        input.source_line_start,
+        input.source_line_end,
+        input.source_title,
+        input.source_hash,
+        input.status,
+        input.confidence,
+        input.verified_at,
+        input.expires_at,
+        input.supersedes ?? null,
+        now,
+        now,
+        now,
+      ],
     );
   } catch (err) {
     console.error('[storeMemory] D1 upsert failed:', err instanceof Error ? err.message : err, { key: input.key });
@@ -815,6 +966,10 @@ async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Pro
       tags: input.tags.join(','),
       importance: input.importance,
       author: input.author,
+      status: input.status,
+      source_type: input.source_type,
+      confidence: input.confidence,
+      namespace: input.namespace,
     });
   } catch (err) {
     vecOk = false;
@@ -948,6 +1103,10 @@ async function retrieveMemory(input: RetrieveMemoryInput, adapter: RecallAdapter
     memories = memories.filter((m) => m.namespace === input.namespace);
   }
 
+  // Lifecycle filter: active/stale by default; superseded/deprecated only when explicitly requested.
+  const includeStatuses = input.include_statuses ?? ['active', 'stale'];
+  memories = memories.filter((m) => includeStatuses.includes(m.status));
+
   if (!memories.length) {
     return textResult('No memories found matching your query and filters.');
   }
@@ -963,8 +1122,8 @@ async function retrieveMemory(input: RetrieveMemoryInput, adapter: RecallAdapter
       (now - new Date(item.memory.accessed_at).getTime()) / (1000 * 60 * 60);
     const halfLife = HALF_LIFE_HOURS[item.memory.memory_type] ?? HALF_LIFE_HOURS.semantic;
     const recencyScore = Math.pow(2, -Math.max(hoursSinceAccess, 0) / halfLife);
-    const combinedScore =
-      0.5 * item.rerankerScore + 0.3 * recencyScore + 0.2 * item.memory.importance;
+    const baseScore = 0.5 * item.rerankerScore + 0.3 * recencyScore + 0.2 * item.memory.importance;
+    const combinedScore = item.memory.status === 'stale' ? baseScore - 0.05 : baseScore;
     return { memory: item.memory, combinedScore, rerankerScore: item.rerankerScore };
   });
 
@@ -990,13 +1149,21 @@ async function retrieveMemory(input: RetrieveMemoryInput, adapter: RecallAdapter
     await adapter.batch(accessUpdates);
   }
 
+  if (input.format === 'json') {
+    return textResult(formatJsonResults(topResults));
+  }
+
   const lines = topResults.map((r, i) => {
     const tagStr = r.memory.tags.length ? r.memory.tags.join(', ') : 'none';
-    return [
-      `${i + 1}. **${r.memory.key}** (score: ${r.combinedScore.toFixed(3)}, importance: ${r.memory.importance})`,
+    const details = [
+      `${i + 1}. **${r.memory.key}** (score: ${r.combinedScore.toFixed(3)}, importance: ${r.memory.importance}, status: ${r.memory.status}, confidence: ${r.memory.confidence})`,
       `   Tags: ${tagStr} | Author: ${r.memory.author}`,
-      `   ${r.memory.content}`,
-    ].join('\n');
+    ];
+    const source = input.include_provenance === false ? null : provenanceLine(r.memory);
+    if (source) details.push(source);
+    details.push(...memoryWarnings(r.memory).map((w) => `   ${w}`));
+    details.push(`   ${r.memory.content}`);
+    return details.join('\n');
   });
 
   return textResult(`Found ${topResults.length} relevant memories:\n\n${lines.join('\n\n')}`);
@@ -1006,7 +1173,7 @@ async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): P
   const limit = input.limit ?? 50;
   const offset = input.offset ?? 0;
 
-  let query = 'SELECT key, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at, access_count FROM memories';
+  let query = 'SELECT key, tags, importance, author, memory_type, namespace, status, confidence, source_type, supersedes_key, superseded_by_key, created_at, updated_at, accessed_at, access_count FROM memories';
   let countQuery = 'SELECT COUNT(*) as total FROM memories';
   const conditions: string[] = [];
   const bindings: unknown[] = [];
@@ -1019,6 +1186,16 @@ async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): P
   if (input.namespace) {
     conditions.push('namespace = ?');
     bindings.push(input.namespace);
+  }
+
+  if (input.status) {
+    conditions.push('status = ?');
+    bindings.push(input.status);
+  }
+
+  if (input.source_type) {
+    conditions.push('source_type = ?');
+    bindings.push(input.source_type);
   }
 
   if (conditions.length) {
@@ -1050,6 +1227,11 @@ async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): P
     author: r.author,
     memory_type: r.memory_type,
     namespace: r.namespace,
+    status: r.status ?? 'active',
+    confidence: r.confidence ?? 0.75,
+    source_type: r.source_type ?? 'manual',
+    supersedes_key: r.supersedes_key ?? null,
+    superseded_by_key: r.superseded_by_key ?? null,
     updated_at: r.updated_at,
     access_count: r.access_count,
   }));
@@ -1065,7 +1247,7 @@ async function listMemories(input: ListMemoriesInput, adapter: RecallAdapter): P
 
   const lines = items.map((m) => {
     const nsPart = m.namespace ? ` [ns: ${m.namespace}]` : '';
-    return `- **${m.key}**${nsPart} [${m.importance}] ${m.memory_type} by ${m.author} — tags: ${m.tags.join(', ') || 'none'} (updated: ${m.updated_at}, accessed: ${m.access_count}x)`;
+    return `- **${m.key}**${nsPart} [${m.importance}] ${m.memory_type} by ${m.author} — status: ${m.status}, confidence: ${m.confidence}, source: ${m.source_type}, tags: ${m.tags.join(', ') || 'none'} (updated: ${m.updated_at}, accessed: ${m.access_count}x)`;
   });
 
   const pageInfo = `Showing ${offset + 1}–${offset + items.length} of ${total}`;
