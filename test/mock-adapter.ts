@@ -17,7 +17,7 @@ export class MockAdapter implements RecallAdapter {
       await this.execBatchStatement(sql, params);
       return [] as T[];
     }
-    if (s.startsWith('update memories set accessed_at')) {
+    if (s.startsWith('update memories set ')) {
       await this.execBatchStatement(sql, params);
       return [] as T[];
     }
@@ -107,6 +107,14 @@ export class MockAdapter implements RecallAdapter {
       rows = rows.filter(r => r.namespace === params[pIdx]);
       pIdx++;
     }
+    if (s.includes('status = ?')) {
+      rows = rows.filter(r => r.status === params[pIdx]);
+      pIdx++;
+    }
+    if (s.includes('source_type = ?')) {
+      rows = rows.filter(r => r.source_type === params[pIdx]);
+      pIdx++;
+    }
     return rows;
   }
 
@@ -120,9 +128,85 @@ export class MockAdapter implements RecallAdapter {
     const s = sql.trim().toLowerCase();
 
     if (s.startsWith('insert into memories ') || s.startsWith('insert into memories(')) {
-      // Param order: id, key, content, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at
-      const [id, key, content, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at] =
-        params as [string, string, string, string, number, string, string, string | null | undefined, string, string, string];
+      let id: string;
+      let key: string;
+      let content: string;
+      let tags: string;
+      let importance: number;
+      let author: string;
+      let memory_type: string;
+      let namespace: string | null | undefined;
+      let source_type: string | null | undefined = 'manual';
+      let source_url: string | null | undefined = null;
+      let source_path: string | null | undefined = null;
+      let source_line_start: number | null | undefined = null;
+      let source_line_end: number | null | undefined = null;
+      let source_title: string | null | undefined = null;
+      let source_hash: string | null | undefined = null;
+      let status: string | null | undefined = 'active';
+      let confidence: number | null | undefined = 0.75;
+      let verified_at: string | null | undefined = null;
+      let expires_at: string | null | undefined = null;
+      let supersedes_key: string | null | undefined = null;
+      let created_at: string;
+      let updated_at: string;
+      let accessed_at: string;
+
+      if (params.length >= 23) {
+        [
+          id,
+          key,
+          content,
+          tags,
+          importance,
+          author,
+          memory_type,
+          namespace,
+          source_type,
+          source_url,
+          source_path,
+          source_line_start,
+          source_line_end,
+          source_title,
+          source_hash,
+          status,
+          confidence,
+          verified_at,
+          expires_at,
+          supersedes_key,
+          created_at,
+          updated_at,
+          accessed_at,
+        ] = params as [
+          string,
+          string,
+          string,
+          string,
+          number,
+          string,
+          string,
+          string | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          number | null | undefined,
+          number | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          number | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          string | null | undefined,
+          string,
+          string,
+          string,
+        ];
+      } else {
+        [id, key, content, tags, importance, author, memory_type, namespace, created_at, updated_at, accessed_at] =
+          params as [string, string, string, string, number, string, string, string | null | undefined, string, string, string];
+      }
+
       const existing = this.memories.get(key);
       this.memories.set(key, {
         id: existing?.id ?? id,
@@ -133,6 +217,19 @@ export class MockAdapter implements RecallAdapter {
         author,
         memory_type,
         namespace: namespace ?? null,
+        source_type: source_type ?? 'manual',
+        source_url: source_url ?? null,
+        source_path: source_path ?? null,
+        source_line_start: source_line_start ?? null,
+        source_line_end: source_line_end ?? null,
+        source_title: source_title ?? null,
+        source_hash: source_hash ?? null,
+        status: status ?? 'active',
+        confidence: confidence ?? 0.75,
+        verified_at: verified_at ?? null,
+        expires_at: expires_at ?? null,
+        supersedes_key: supersedes_key ?? null,
+        superseded_by_key: null,
         created_at: existing?.created_at ?? created_at,
         updated_at,
         accessed_at: existing?.accessed_at ?? accessed_at,
@@ -147,6 +244,41 @@ export class MockAdapter implements RecallAdapter {
       if (m) {
         m.accessed_at = accessedAt;
         m.access_count = ((m.access_count as number) ?? 0) + 1;
+      }
+      return;
+    }
+
+    if (s.startsWith('update memories set status = ?, updated_at = ? where key = ?')) {
+      const [status, updatedAt, key] = params as [string, string, string];
+      const m = this.memories.get(key);
+      if (m) {
+        m.status = status;
+        m.updated_at = updatedAt;
+      }
+      return;
+    }
+
+    if (s.startsWith('update memories set status = ?, superseded_by_key = ?, updated_at = ? where key = ?')) {
+      const [status, supersededByKey, updatedAt, key] = params as [string, string, string, string];
+      const m = this.memories.get(key);
+      if (m) {
+        m.status = status;
+        m.superseded_by_key = supersededByKey;
+        m.updated_at = updatedAt;
+      }
+      return;
+    }
+
+    if (s.startsWith('update memories set ') && s.includes(' where key = ?')) {
+      const key = params[params.length - 1] as string;
+      const m = this.memories.get(key);
+      if (m) {
+        const lowerSql = sql.toLowerCase();
+        const setPart = sql.slice(lowerSql.indexOf('set ') + 4, lowerSql.lastIndexOf(' where '));
+        const columns = setPart.split(',').map(part => part.trim().split(/\s*=\s*\?/)[0]);
+        for (let i = 0; i < columns.length; i++) {
+          m[columns[i]] = params[i];
+        }
       }
       return;
     }
@@ -185,10 +317,13 @@ export class MockAdapter implements RecallAdapter {
     }
 
     if (s.startsWith('insert into memory_relationships')) {
-      const [from_key, to_key, strength, created_at] = params as [string, string, number, string];
-      const existing = this.relationships.find(r => r.from_key === from_key && r.to_key === to_key && r.relationship_type === 'similar');
+      const [from_key, to_key] = params as [string, string];
+      const relationship_type = typeof params[2] === 'string' ? params[2] as string : 'similar';
+      const strength = (typeof params[2] === 'string' ? params[3] : params[2]) as number;
+      const created_at = (typeof params[2] === 'string' ? params[4] : params[3]) as string;
+      const existing = this.relationships.find(r => r.from_key === from_key && r.to_key === to_key && r.relationship_type === relationship_type);
       if (existing) existing.strength = strength;
-      else this.relationships.push({ from_key, to_key, relationship_type: 'similar', strength, created_at });
+      else this.relationships.push({ from_key, to_key, relationship_type, strength, created_at });
       return;
     }
   }
