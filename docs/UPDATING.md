@@ -48,9 +48,9 @@ Mutating and intentionally strict:
 4. Records the current revision in `.recall-update/previous-revision`.
 5. Runs `npm ci`.
 6. Runs `npm run typecheck` and `npm test`.
-7. Applies pending D1 migrations only when `schema_migrations` is reachable.
+7. Confirms `schema_migrations` is reachable, then applies pending D1 migrations.
 8. Runs `wrangler deploy`.
-9. Smoke-tests `/health` and, when an API key and worker URL are available, MCP `tools/list`.
+9. Requires smoke tests: `/health` plus authenticated MCP `tools/list`. Set `RECALL_WORKER_URL` if your worker URL cannot be detected from `wrangler.toml`; provide `MEMORY_API_KEY` or `.recall-api-key`.
 
 The updater reads `.recall-api-key` only for the authenticated smoke test and never prints the value. Logs redact authorization examples.
 
@@ -69,8 +69,8 @@ npx wrangler d1 export <your-db-name> --remote --output recall-backup.sql
 Migrations live in `migrations/` and are tracked by the D1 table `schema_migrations`.
 
 - `--check` lists pending migrations when it can query D1.
-- `--apply` runs pending numbered SQL files in order only when `schema_migrations` is reachable.
-- If D1 cannot be queried, the updater skips automatic migrations and warns. Follow the release notes and run the relevant files manually.
+- `--apply` runs pending numbered SQL files in order and refuses to continue unless `schema_migrations` is reachable.
+- If D1 cannot be queried, fix D1 access or run/record migrations manually before rerunning `--apply`.
 - Existing Docker/Postgres and local SQLite installs may have backend-specific migration behavior; check each migration comment header and release notes.
 
 Manual D1 migration example:

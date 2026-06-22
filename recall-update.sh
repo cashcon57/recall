@@ -324,17 +324,17 @@ apply_pending_migrations() {
   local db_name pending file base version
   db_name="$(parse_d1_db_name 2>/dev/null || true)"
   if [[ -z "$db_name" ]]; then
-    warn "no D1 database_name detected; skipping migrations"
-    return 0
+    err "no D1 database_name detected; cannot apply required migrations"
+    return 1
   fi
   set +e
   pending="$(pending_migrations "$db_name")"
   local status=$?
   set -e
   if [[ $status -ne 0 ]]; then
-    warn "schema_migrations is not reachable; skipping automatic D1 migrations"
-    warn "Run pending migrations manually if this release includes schema changes."
-    return 0
+    err "schema_migrations is not reachable; refusing --apply because migrations are required to be checked/applied"
+    err "Run migrations manually or fix D1 access, then rerun --apply."
+    return 1
   fi
   if [[ -z "$pending" ]]; then
     log "No pending D1 migrations"
@@ -350,11 +350,16 @@ apply_pending_migrations() {
 }
 
 smoke_test() {
+  local mode="${1:-required}"
   local url key auth_url
   url="$(parse_worker_url 2>/dev/null || true)"
   if [[ -z "$url" ]]; then
-    warn "worker URL not detectable; skipping smoke tests (set RECALL_WORKER_URL)"
-    return 0
+    if [[ "$mode" == "optional" ]]; then
+      warn "worker URL not detectable; skipping optional smoke tests (set RECALL_WORKER_URL)"
+      return 0
+    fi
+    err "worker URL not detectable; set RECALL_WORKER_URL=https://your-worker.example.com so --apply can run required smoke tests"
+    return 1
   fi
   run curl -fsS --max-time 10 "${url%/}/health" >/dev/null
   if [[ -n "${MEMORY_API_KEY:-}" ]]; then
@@ -362,8 +367,12 @@ smoke_test() {
   elif [[ -f .recall-api-key ]]; then
     key="$(tr -d '\r\n' < .recall-api-key)"
   else
-    warn "no MEMORY_API_KEY env or .recall-api-key; skipping authenticated MCP tools/list smoke test"
-    return 0
+    if [[ "$mode" == "optional" ]]; then
+      warn "no MEMORY_API_KEY env or .recall-api-key; skipping optional authenticated MCP tools/list smoke test"
+      return 0
+    fi
+    err "no MEMORY_API_KEY env or .recall-api-key; authenticated MCP tools/list smoke test is required for --apply"
+    return 1
   fi
   auth_url="${url%/}/mcp"
   log "+ curl -fsS --max-time 15 -H 'Authorization: Bearer ***' -H 'Content-Type: application/json' -d '{...tools/list...}' '$auth_url'"
@@ -423,7 +432,7 @@ run_rollback() {
     warn "node_modules missing; skipping typecheck/test during rollback"
   fi
   run npx_wrangler deploy
-  smoke_test
+  smoke_test optional
   log "Rollback deploy completed. Review database schema manually if migrations were applied."
 }
 
