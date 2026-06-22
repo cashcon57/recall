@@ -4,6 +4,31 @@
 
 All notable changes to Recall are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] — 2026-06-22
+
+Trustworthy-memory and Hermes-integration release. Adds provenance/lifecycle/supersession workflows and an optional conservative updater path without changing the config ownership model.
+
+### Added
+
+- **Provenance and lifecycle metadata** for trustworthy agent memory: source type/URL/path/title/hash, confidence, verification, expiration, status, and supersession fields.
+- **Lifecycle MCP tools**: `mark_memory_status`, `verify_memory`, and `supersede_memory`, bringing the expected tool count to 10.
+- **Optional updater script** (`recall-update.sh`) with safe default commands: `--check`, `--doctor`, `--apply`, `--rollback`, and `--install-cron weekly`.
+- **Updating documentation** (`docs/UPDATING.md`) covering the config preservation contract, migration behavior, rollback, cron opt-in, and GitHub Actions notes.
+- **Hermes integration guide** (`docs/HERMES_INTEGRATION.md`) documenting one-instance namespace routing, Discord provenance patterns, wrapper-script MCP config, and cron examples.
+- **Release checklist** (`docs/RELEASE_CHECKLIST.md`) and an example weekly GitHub Actions workflow (`examples/github-actions-update.yml`).
+
+### Changed
+
+- README now describes Recall as trustworthy memory with provenance/lifecycle/supersession, links the new docs, and updates Docker quickstart `tools/list` expectation to 10 tools.
+- Consolidation and lifecycle guidance emphasizes preserving audit trails and superseding stale facts instead of silently overwriting history.
+
+### Upgrade notes
+
+- Run `npm ci`, `npm run typecheck`, and `npm test` before deploying.
+- Apply numbered D1 migrations in order, or use `./recall-update.sh --check` to inspect pending migrations and `./recall-update.sh --apply` only when you are comfortable with its conservative deploy flow.
+- The updater intentionally refuses to overwrite user-owned config/secrets (`wrangler.toml`, `.dev.vars`, `.recall-api-key`, MCP configs, D1/Vectorize/routes/env blocks). If a release changes those areas, merge them manually.
+- Rollback redeploys previous worker code only; D1 schema rollback remains manual.
+
 ## [1.1.2] — 2026-04-12
 
 Three bug fixes discovered while running the v1.1.1 wizard end-to-end against a fresh project (the AgentBoard repo). All three would have hit real users; two were silently destructive.
@@ -127,6 +152,7 @@ First public release. Foundational architecture and a usable end-to-end setup wi
 
 **Note on v1.0.0 tagging history:** Between the initial v1.0.0 tag and the release of v1.1.0, the v1.0.0 tag was force-pushed several times during iterative hardening. This was a mistake — tags should be immutable. With v1.1.0, the tag discipline resets: v1.0.0 is now permanently pinned to its original commit, v1.1.0 is the new pinned default, and future versions will ship as new tags (no force-pushes). See the repository's release notes on GitHub for the canonical per-version state.
 
+[2.2.0]: https://github.com/cashcon57/recall/releases/tag/v2.2.0
 [1.1.2]: https://github.com/cashcon57/recall/releases/tag/v1.1.2
 [1.1.1]: https://github.com/cashcon57/recall/releases/tag/v1.1.1
 [1.1.0]: https://github.com/cashcon57/recall/releases/tag/v1.1.0

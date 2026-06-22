@@ -9,7 +9,7 @@
 [![Backends](https://img.shields.io/badge/Backends-3-brightgreen)](#deployment-options)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/cash508287)
 
-**A self-hosted MCP memory server with hybrid semantic + keyword search. Deploy to Cloudflare Workers, run locally without any cloud dependencies, or self-host with Docker.**
+**A self-hosted MCP memory server for trustworthy agent memory: hybrid semantic + keyword search, provenance, lifecycle controls, supersession, and durable recall. Deploy to Cloudflare Workers, run locally without any cloud dependencies, or self-host with Docker.**
 
 > Not affiliated with Microsoft Windows Recall. This is an open-source memory server for AI coding assistants (Claude Code, Cursor, Windsurf, Cline, Claude Desktop, anything speaking MCP).
 
@@ -69,11 +69,19 @@ Three backends. Same tool surface. Choose what fits your infra:
 
 > **Memory portability between backends:** All three backends use the bge-m3 model (1024D embeddings). Local and Docker backends run the [Xenova ONNX export](https://huggingface.co/Xenova/bge-m3) with CLS pooling to match the reference recipe. Vector compatibility across backends is close in practice — semantic search works cross-backend — but exact bit-for-bit portability is not yet verified with an end-to-end smoke test. If strict portability matters, test your workload before migrating.
 
+## Docs
+
+- [Updating Recall](./docs/UPDATING.md) — optional updater script, config preservation contract, migrations, rollback, cron, and GitHub Actions notes.
+- [Hermes integration](./docs/HERMES_INTEGRATION.md) — recommended namespaces, Discord provenance, MCP wrapper config, routing rules, and cron examples for Hermes Agent.
+- [Release checklist](./docs/RELEASE_CHECKLIST.md) — validation checklist for typecheck/test/deploy, MCP smoke tests, lifecycle tools, consolidation, updater, and Hermes docs.
+
 ## Why Recall?
 
 Most MCP memory servers do one of two things: dump text into SQLite with cosine similarity, or call a hosted vector DB. Recall does both — at the same time — and reranks the combined results with a cross-encoder.
 
 - **Hybrid search** — Vector similarity (bge-m3, 1024D) + BM25 full-text search, fused via Reciprocal Rank Fusion. Catches both semantic paraphrases and exact keyword matches.
+- **Trustworthy memory metadata** — Optional provenance fields (`source_type`, URL/path/title/hash), confidence, verification time, expiration, and status make retrieved memories auditable instead of context-free snippets.
+- **Lifecycle + supersession** — Mark memories active/stale/superseded/deprecated, verify them, or supersede older keys without losing the historical trail that explains past behavior.
 - **Cross-encoder reranking** — Final candidates run through bge-reranker-base for precision. Content is truncated before reranking to keep AI token usage low.
 - **Tiered recency decay** — Three memory tiers with biological half-lives: `episodic` (7d, session events), `semantic` (69d, facts/concepts), `procedural` (693d, stable rules/credentials). Episodic context ages out fast; architecture decisions stay relevant for years. Tier design inspired by [NornicDB](https://github.com/orneryd/NornicDB).
 - **Auto-relationship graph** — Memories with embedding similarity > 0.82 are automatically linked on store. Traverse with `get_related_memories` to find contextually adjacent knowledge without re-querying.
@@ -209,7 +217,7 @@ curl -s -X POST http://localhost:8788 \
   -H "Authorization: Bearer your-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | jq '.result.tools | length'
-# Expected: 7
+# Expected: 10
 
 # 4. Tear down (keeps data in pgdata volume)
 docker compose down
@@ -355,6 +363,9 @@ All tools are callable via the standard MCP `tools/call` method.
 | `retrieve_memory`      | Hybrid search (vector + BM25 → RRF → rerank → recency decay → importance). Returns top-N with combined scores. Optional `namespace` filter. |
 | `list_memories`        | Browse with pagination + filters (tag, author, `namespace`, limit, offset). Returns metadata only. |
 | `get_related_memories` | Traverse the auto-relationship graph from a given key. Returns related memories ranked by edge strength. |
+| `mark_memory_status`   | Change lifecycle status (`active`, `stale`, `superseded`, `deprecated`) without deleting historical context. |
+| `verify_memory`        | Mark a memory verified with optional confidence/source updates so agents can prefer trustworthy facts. |
+| `supersede_memory`     | Link an old key to a replacement key, preserving the audit trail while steering retrieval to the newer fact. |
 | `delete_memory`        | Remove a memory by key from the store, FTS, and the vector index. |
 | `clear_memories`       | Wipe everything. **Default-disabled** — requires both `confirm: true` AND the `ALLOW_DESTRUCTIVE_TOOLS=true` secret on the worker. See [Security](#security) for why. |
 | `consolidate_memories` | Read-only analysis: flags similar memory pairs and stale entries. Returns a markdown report. |
@@ -695,7 +706,7 @@ recall/
 ├── src/
 │   ├── index.ts      # Worker fetch + scheduled handler, rate limit, auth
 │   ├── mcp.ts        # JSON-RPC 2.0 / MCP protocol dispatcher
-│   ├── tools.ts      # 6 tool implementations + search pipeline + consolidation
+│   ├── tools.ts      # MCP tool implementations + search, lifecycle, and consolidation
 │   ├── auth.ts       # Constant-time HMAC-SHA256 API key verify
 │   └── types.ts      # Env bindings + domain + JSON-RPC types
 ├── schema.sql        # D1 table + indexes + FTS5 virtual table
