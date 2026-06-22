@@ -17,7 +17,7 @@ export class MockAdapter implements RecallAdapter {
       await this.execBatchStatement(sql, params);
       return [] as T[];
     }
-    if (s.startsWith('update memories set accessed_at')) {
+    if (s.startsWith('update memories set ')) {
       await this.execBatchStatement(sql, params);
       return [] as T[];
     }
@@ -248,6 +248,41 @@ export class MockAdapter implements RecallAdapter {
       return;
     }
 
+    if (s.startsWith('update memories set status = ?, updated_at = ? where key = ?')) {
+      const [status, updatedAt, key] = params as [string, string, string];
+      const m = this.memories.get(key);
+      if (m) {
+        m.status = status;
+        m.updated_at = updatedAt;
+      }
+      return;
+    }
+
+    if (s.startsWith('update memories set status = ?, superseded_by_key = ?, updated_at = ? where key = ?')) {
+      const [status, supersededByKey, updatedAt, key] = params as [string, string, string, string];
+      const m = this.memories.get(key);
+      if (m) {
+        m.status = status;
+        m.superseded_by_key = supersededByKey;
+        m.updated_at = updatedAt;
+      }
+      return;
+    }
+
+    if (s.startsWith('update memories set ') && s.includes(' where key = ?')) {
+      const key = params[params.length - 1] as string;
+      const m = this.memories.get(key);
+      if (m) {
+        const lowerSql = sql.toLowerCase();
+        const setPart = sql.slice(lowerSql.indexOf('set ') + 4, lowerSql.lastIndexOf(' where '));
+        const columns = setPart.split(',').map(part => part.trim().split(/\s*=\s*\?/)[0]);
+        for (let i = 0; i < columns.length; i++) {
+          m[columns[i]] = params[i];
+        }
+      }
+      return;
+    }
+
     if (s.startsWith('delete from memories where key = ?')) {
       this.memories.delete(params[0] as string);
       return;
@@ -282,10 +317,13 @@ export class MockAdapter implements RecallAdapter {
     }
 
     if (s.startsWith('insert into memory_relationships')) {
-      const [from_key, to_key, strength, created_at] = params as [string, string, number, string];
-      const existing = this.relationships.find(r => r.from_key === from_key && r.to_key === to_key && r.relationship_type === 'similar');
+      const [from_key, to_key] = params as [string, string];
+      const relationship_type = typeof params[2] === 'string' ? params[2] as string : 'similar';
+      const strength = (typeof params[2] === 'string' ? params[3] : params[2]) as number;
+      const created_at = (typeof params[2] === 'string' ? params[4] : params[3]) as string;
+      const existing = this.relationships.find(r => r.from_key === from_key && r.to_key === to_key && r.relationship_type === relationship_type);
       if (existing) existing.strength = strength;
-      else this.relationships.push({ from_key, to_key, relationship_type: 'similar', strength, created_at });
+      else this.relationships.push({ from_key, to_key, relationship_type, strength, created_at });
       return;
     }
   }

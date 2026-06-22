@@ -144,6 +144,33 @@ export interface StoreMemoryInput {
   supersedes?: string;
 }
 
+export interface MarkMemoryStatusInput {
+  key: string;
+  status: MemoryStatus;
+  reason?: string;
+}
+
+export interface VerifyMemoryInput {
+  key: string;
+  confidence?: number;
+  source_type?: MemorySourceType;
+  source_url?: string | null;
+  source_path?: string | null;
+  source_line_start?: number | null;
+  source_line_end?: number | null;
+  source_title?: string | null;
+  source_hash?: string | null;
+  verified_at: string;
+  expires_at?: string | null;
+  status: MemoryStatus;
+}
+
+export interface SupersedeMemoryInput extends StoreMemoryInput {
+  old_key: string;
+  new_key: string;
+  reason?: string;
+}
+
 export interface GetRelatedMemoriesInput {
   key: string;
   relationship_type?: string;

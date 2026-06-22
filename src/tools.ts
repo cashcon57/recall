@@ -8,6 +8,9 @@ import type {
   McpToolDefinition,
   McpToolResult,
   StoreMemoryInput,
+  MarkMemoryStatusInput,
+  VerifyMemoryInput,
+  SupersedeMemoryInput,
   RetrieveMemoryInput,
   ListMemoriesInput,
   DeleteMemoryInput,
@@ -92,6 +95,74 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
         supersedes: { type: 'string', description: 'Optional key of a memory this new memory supersedes.' },
       },
       required: ['key', 'content', 'author'],
+    },
+  },
+  {
+    name: 'mark_memory_status',
+    description: 'Update the lifecycle status of an existing memory without deleting its search indexes. D1 is canonical; vector metadata may remain stale until reindex.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Memory key to update' },
+        status: {
+          type: 'string',
+          enum: ['active', 'stale', 'superseded', 'deprecated'],
+          description: 'New lifecycle status for the memory.',
+        },
+        reason: { type: 'string', description: 'Optional human-readable reason for the status change.' },
+      },
+      required: ['key', 'status'],
+    },
+  },
+  {
+    name: 'verify_memory',
+    description: 'Verify an existing memory and update provided provenance, confidence, expiration, and lifecycle fields while preserving unprovided fields.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Memory key to verify' },
+        confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Optional confidence score, 0.0–1.0.' },
+        source_type: { type: 'string', enum: ['manual', 'chat', 'doc', 'code', 'issue', 'pull_request', 'log', 'web', 'inferred'] },
+        source_url: { type: 'string' },
+        source_path: { type: 'string' },
+        source_line_start: { type: 'integer', minimum: 1 },
+        source_line_end: { type: 'integer', minimum: 1 },
+        source_title: { type: 'string' },
+        source_hash: { type: 'string' },
+        verified_at: { type: 'string', description: 'ISO timestamp, or "auto-now" / omitted to use the current time.' },
+        expires_at: { type: 'string', description: 'Optional ISO expiration timestamp.' },
+        status: { type: 'string', enum: ['active', 'stale', 'superseded', 'deprecated'], description: 'Lifecycle status (default active).' },
+      },
+      required: ['key'],
+    },
+  },
+  {
+    name: 'supersede_memory',
+    description: 'Create a replacement memory, mark the old memory superseded, and add supersession relationship edges.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        old_key: { type: 'string', description: 'Existing memory key being replaced.' },
+        new_key: { type: 'string', description: 'New memory key to create.' },
+        content: { type: 'string', description: 'Replacement memory content.' },
+        author: { type: 'string', description: 'Who created the replacement memory.' },
+        reason: { type: 'string', description: 'Optional reason for supersession.' },
+        tags: { type: 'array', items: { type: 'string' } },
+        importance: { type: 'number', minimum: 0, maximum: 1 },
+        memory_type: { type: 'string', enum: ['episodic', 'semantic', 'procedural'] },
+        namespace: { type: 'string' },
+        source_type: { type: 'string', enum: ['manual', 'chat', 'doc', 'code', 'issue', 'pull_request', 'log', 'web', 'inferred'] },
+        source_url: { type: 'string' },
+        source_path: { type: 'string' },
+        source_line_start: { type: 'integer', minimum: 1 },
+        source_line_end: { type: 'integer', minimum: 1 },
+        source_title: { type: 'string' },
+        source_hash: { type: 'string' },
+        confidence: { type: 'number', minimum: 0, maximum: 1 },
+        verified_at: { type: 'string' },
+        expires_at: { type: 'string' },
+      },
+      required: ['old_key', 'new_key', 'content', 'author'],
     },
   },
   {
@@ -299,6 +370,17 @@ const VALID_RETRIEVE_FORMATS = new Set<RetrieveFormat>(['text', 'json']);
 const MAX_NAMESPACE_LEN = 128;
 const MAX_SOURCE_FIELD_LEN = 2048;
 const MAX_SOURCE_TITLE_LEN = 512;
+const MAX_REASON_LEN = 2048;
+
+function validateRequiredKeyRef(raw: unknown, field: string): string {
+  const key = validateOptionalKeyRef(raw, field);
+  if (key === undefined) throw new Error(`${field} must be a non-empty string (max ${MAX_KEY_LEN} chars)`);
+  return key;
+}
+
+function hasOwn(args: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(args, key);
+}
 
 function validateNamespace(raw: unknown): string | null {
   if (raw === undefined || raw === null || raw === '') return null;
@@ -455,6 +537,55 @@ export function validateStoreInput(args: Record<string, unknown>): StoreMemoryIn
   };
 
   if (supersedes !== undefined) result.supersedes = supersedes;
+  return result;
+}
+
+export function validateMarkMemoryStatusInput(args: Record<string, unknown>): MarkMemoryStatusInput {
+  const result: MarkMemoryStatusInput = {
+    key: validateRequiredKeyRef(args.key, 'key'),
+    status: validateMemoryStatus(args.status),
+  };
+  if (args.reason !== undefined) {
+    result.reason = validateNullableString(args.reason, 'reason', MAX_REASON_LEN) ?? undefined;
+  }
+  return result;
+}
+
+export function validateVerifyMemoryInput(args: Record<string, unknown>): VerifyMemoryInput {
+  const result: VerifyMemoryInput = {
+    key: validateRequiredKeyRef(args.key, 'key'),
+    verified_at: new Date().toISOString(),
+    status: args.status === undefined ? 'active' : validateMemoryStatus(args.status),
+  };
+
+  if (args.verified_at !== undefined && args.verified_at !== 'auto-now') {
+    const verified = validateIsoDateString(args.verified_at, 'verified_at');
+    if (verified === null) throw new Error('verified_at must be an ISO 8601 date string or "auto-now"');
+    result.verified_at = verified;
+  }
+  if (hasOwn(args, 'confidence')) result.confidence = validateConfidence(args.confidence);
+  if (hasOwn(args, 'source_type')) result.source_type = validateSourceType(args.source_type);
+  if (hasOwn(args, 'source_url')) result.source_url = validateNullableString(args.source_url, 'source_url');
+  if (hasOwn(args, 'source_path')) result.source_path = validateNullableString(args.source_path, 'source_path');
+  const lineRange = validateOptionalLineRange(args);
+  if (hasOwn(args, 'source_line_start')) result.source_line_start = lineRange.source_line_start;
+  if (hasOwn(args, 'source_line_end')) result.source_line_end = lineRange.source_line_end;
+  if (hasOwn(args, 'source_title')) result.source_title = validateNullableString(args.source_title, 'source_title', MAX_SOURCE_TITLE_LEN);
+  if (hasOwn(args, 'source_hash')) result.source_hash = validateNullableString(args.source_hash, 'source_hash');
+  if (hasOwn(args, 'expires_at')) result.expires_at = validateIsoDateString(args.expires_at, 'expires_at');
+
+  return result;
+}
+
+export function validateSupersedeMemoryInput(args: Record<string, unknown>): SupersedeMemoryInput {
+  const old_key = validateRequiredKeyRef(args.old_key, 'old_key');
+  const new_key = validateRequiredKeyRef(args.new_key, 'new_key');
+  if (old_key === new_key) throw new Error('new_key must differ from old_key');
+  const storeInput = validateStoreInput({ ...args, key: new_key, supersedes: old_key, status: 'active' });
+  const result: SupersedeMemoryInput = { ...storeInput, old_key, new_key };
+  if (args.reason !== undefined) {
+    result.reason = validateNullableString(args.reason, 'reason', MAX_REASON_LEN) ?? undefined;
+  }
   return result;
 }
 
@@ -821,6 +952,12 @@ export async function executeTool(
     switch (name) {
       case 'store_memory':
         return await storeMemory(validateStoreInput(args), adapter);
+      case 'mark_memory_status':
+        return await markMemoryStatus(validateMarkMemoryStatusInput(args), adapter);
+      case 'verify_memory':
+        return await verifyMemory(validateVerifyMemoryInput(args), adapter);
+      case 'supersede_memory':
+        return await supersedeMemory(validateSupersedeMemoryInput(args), adapter);
       case 'retrieve_memory':
         return await retrieveMemory(validateRetrieveInput(args), adapter);
       case 'list_memories':
@@ -841,8 +978,6 @@ export async function executeTool(
   }
 }
 
-// ─── Tool implementations ───────────────────────────────────────────
-
 async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Promise<McpToolResult> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -855,7 +990,7 @@ async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Pro
 
   if (dupeMatches.length) {
     const top = dupeMatches[0];
-    if (top.score > 0.92 && top.id !== input.key) {
+    if (top.score > 0.92 && top.id !== input.key && top.id !== input.supersedes) {
       return textResult(
         `Similar memory already exists at key "${top.id}" (similarity: ${top.score.toFixed(3)}). ` +
         `Consider updating that memory instead, or use the same key to overwrite. Memory was NOT stored.`,
@@ -1047,6 +1182,86 @@ async function storeMemory(input: StoreMemoryInput, adapter: RecallAdapter): Pro
   return textResult(
     `Stored memory "${input.key}" (${input.content.length} chars, ${input.tags.length} tags, importance: ${input.importance})`,
   );
+}
+
+async function markMemoryStatus(input: MarkMemoryStatusInput, adapter: RecallAdapter): Promise<McpToolResult> {
+  const existing = await adapter.query('SELECT id FROM memories WHERE key = ?', [input.key]);
+  if (!existing.length) return textResult(`Memory "${input.key}" not found.`, true);
+
+  const now = new Date().toISOString();
+  await adapter.query('UPDATE memories SET status = ?, updated_at = ? WHERE key = ?', [input.status, now, input.key]);
+
+  const reason = input.reason ? ` Reason: ${input.reason}` : '';
+  return textResult(`Marked memory "${input.key}" as ${input.status}.${reason}`);
+}
+
+async function verifyMemory(input: VerifyMemoryInput, adapter: RecallAdapter): Promise<McpToolResult> {
+  const existing = await adapter.query('SELECT id FROM memories WHERE key = ?', [input.key]);
+  if (!existing.length) return textResult(`Memory "${input.key}" not found.`, true);
+
+  const assignments: string[] = ['verified_at = ?', 'status = ?', 'updated_at = ?'];
+  const now = new Date().toISOString();
+  const params: unknown[] = [input.verified_at, input.status, now];
+
+  const optionalFields: Array<keyof VerifyMemoryInput> = [
+    'confidence',
+    'source_type',
+    'source_url',
+    'source_path',
+    'source_line_start',
+    'source_line_end',
+    'source_title',
+    'source_hash',
+    'expires_at',
+  ];
+  for (const field of optionalFields) {
+    if (Object.prototype.hasOwnProperty.call(input, field)) {
+      assignments.push(`${field} = ?`);
+      params.push(input[field]);
+    }
+  }
+  params.push(input.key);
+
+  await adapter.query(`UPDATE memories SET ${assignments.join(', ')} WHERE key = ?`, params);
+  return textResult(`Verified memory "${input.key}" at ${input.verified_at} with status ${input.status}.`);
+}
+
+async function supersedeMemory(input: SupersedeMemoryInput, adapter: RecallAdapter): Promise<McpToolResult> {
+  const oldExists = await adapter.query('SELECT id FROM memories WHERE key = ?', [input.old_key]);
+  if (!oldExists.length) return textResult(`Memory "${input.old_key}" not found.`, true);
+
+  const newExistsBefore = await adapter.query('SELECT id FROM memories WHERE key = ?', [input.new_key]);
+  if (newExistsBefore.length) return textResult(`Replacement memory "${input.new_key}" already exists.`, true);
+
+  const storeResult = await storeMemory(input, adapter);
+  const newExistsAfter = await adapter.query('SELECT id FROM memories WHERE key = ?', [input.new_key]);
+  if (!newExistsAfter.length) {
+    return storeResult.isError ? storeResult : textResult(`Replacement memory "${input.new_key}" was not stored.`, true);
+  }
+
+  const now = new Date().toISOString();
+  await adapter.batch([
+    {
+      sql: 'UPDATE memories SET status = ?, superseded_by_key = ?, updated_at = ? WHERE key = ?',
+      params: ['superseded', input.new_key, now, input.old_key],
+    },
+    {
+      sql: `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
+      params: [input.new_key, input.old_key, 'supersedes', 1.0, now],
+    },
+    {
+      sql: `INSERT INTO memory_relationships (from_key, to_key, relationship_type, strength, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (from_key, to_key, relationship_type) DO UPDATE SET strength = excluded.strength`,
+      params: [input.old_key, input.new_key, 'superseded_by', 1.0, now],
+    },
+  ]);
+
+  const reason = input.reason ? ` Reason: ${input.reason}` : '';
+  const warning = storeResult.isError ? ` Store warning: ${storeResult.content[0]?.text ?? 'index sync warning'}` : '';
+  return textResult(`Superseded memory "${input.old_key}" with "${input.new_key}".${reason}${warning}`);
 }
 
 async function retrieveMemory(input: RetrieveMemoryInput, adapter: RecallAdapter): Promise<McpToolResult> {
