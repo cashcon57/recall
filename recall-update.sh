@@ -170,6 +170,33 @@ pending_migrations() {
   rm -f "$tmp"
 }
 
+remote_query_has_row() {
+  local db_name="$1"
+  local command="$2"
+  npx_wrangler d1 execute "$db_name" --remote --command "$command" 2>/dev/null | grep -q '"found"[[:space:]]*:[[:space:]]*1'
+}
+
+bootstrap_schema_migrations() {
+  local db_name="$1"
+  if [[ ! -f migrations/0000_schema_migrations.sql ]]; then
+    err "missing migrations/0000_schema_migrations.sql; cannot bootstrap migration tracking"
+    return 1
+  fi
+  warn "schema_migrations is not reachable; bootstrapping migration tracking"
+  run npx_wrangler d1 execute "$db_name" --remote --file=migrations/0000_schema_migrations.sql
+  run npx_wrangler d1 execute "$db_name" --remote --command "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES ('0000', datetime('now'));"
+
+  # Existing installs before migration tracking may already have 0002/0003 applied.
+  # Record only what the live schema proves, then let pending_migrations apply the rest.
+  if remote_query_has_row "$db_name" "SELECT 1 AS found FROM pragma_table_info('memories') WHERE name = 'memory_type' LIMIT 1;" && \
+    remote_query_has_row "$db_name" "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'memory_relationships' LIMIT 1;"; then
+    run npx_wrangler d1 execute "$db_name" --remote --command "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES ('0002', datetime('now'));"
+  fi
+  if remote_query_has_row "$db_name" "SELECT 1 AS found FROM pragma_table_info('memories') WHERE name = 'namespace' LIMIT 1;"; then
+    run npx_wrangler d1 execute "$db_name" --remote --command "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES ('0003', datetime('now'));"
+  fi
+}
+
 print_migration_status() {
   local db_name pending_status
   db_name="$(parse_d1_db_name 2>/dev/null || true)"
@@ -332,9 +359,16 @@ apply_pending_migrations() {
   local status=$?
   set -e
   if [[ $status -ne 0 ]]; then
-    err "schema_migrations is not reachable; refusing --apply because migrations are required to be checked/applied"
-    err "Run migrations manually or fix D1 access, then rerun --apply."
-    return 1
+    bootstrap_schema_migrations "$db_name"
+    set +e
+    pending="$(pending_migrations "$db_name")"
+    status=$?
+    set -e
+    if [[ $status -ne 0 ]]; then
+      err "schema_migrations is not reachable after bootstrap; refusing --apply because migrations are required to be checked/applied"
+      err "Run migrations manually or fix D1 access, then rerun --apply."
+      return 1
+    fi
   fi
   if [[ -z "$pending" ]]; then
     log "No pending D1 migrations"
@@ -375,7 +409,7 @@ smoke_test() {
     return 1
   fi
   auth_url="${url%/}/mcp"
-  log "+ curl -fsS --max-time 15 -H 'Authorization: Bearer ***' -H 'Content-Type: application/json' -d '{...tools/list...}' '$auth_url'"
+  log "+ curl -fsS --max-time 15 -H 'Authorization: Bearer <redacted>' -H 'Content-Type: application/json' -d '{...tools/list...}' '$auth_url'"
   curl -fsS --max-time 15 \
     -H "Authorization: Bearer ${key}" \
     -H "Content-Type: application/json" \
